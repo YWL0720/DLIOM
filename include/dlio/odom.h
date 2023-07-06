@@ -119,7 +119,7 @@ private:
   geometry_msgs::PoseArray kf_pose_ros;
   geometry_msgs::PoseArray global_pose;
 
-
+  bool global_dense;
   // Flags
   std::atomic<bool> dlio_initialized;
   std::atomic<bool> first_valid_scan;
@@ -200,6 +200,7 @@ private:
   std::vector<int> submap_kf_idx_prev;
 
   // Loop
+  pcl::PointCloud<PointType>::Ptr current_scan_lidar;
   std::vector<pcl::PointCloud<PointType>::Ptr> history_pointcloud_lidar;
   std::vector<pcl::PointCloud<PointType>::Ptr> history_kf_lidar;
   std::mutex history_kf_lidar_mutex;
