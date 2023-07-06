@@ -22,6 +22,7 @@ public:
   void start();
   int count;
   void mapping();
+  void performLoop();
 private:
 
   struct State;
@@ -109,12 +110,15 @@ private:
   ros::Publisher kf_connect_pub;
   ros::Publisher global_map_pub;
   ros::Publisher global_pose_pub;
+  ros::Publisher loop_constraint_pub;
 
   // ROS Msgs
   nav_msgs::Odometry odom_ros;
   geometry_msgs::PoseStamped pose_ros;
   nav_msgs::Path path_ros;
   geometry_msgs::PoseArray kf_pose_ros;
+  geometry_msgs::PoseArray global_pose;
+
 
   // Flags
   std::atomic<bool> dlio_initialized;
@@ -132,6 +136,8 @@ private:
   std::thread metrics_thread;
   std::thread debug_thread;
   std::thread mapping_thread;
+  std::thread loop_thread;
+
 
   // Trajectory
   std::vector<std::pair<Eigen::Vector3f, Eigen::Quaternionf>> trajectory;
@@ -192,8 +198,56 @@ private:
   std::vector<float> similarity;
   std::vector<int> submap_kf_idx_curr;
   std::vector<int> submap_kf_idx_prev;
-  // id sim dis
-  std::pair<int, std::pair<float, float>> loop_info;
+
+  // Loop
+  std::vector<pcl::PointCloud<PointType>::Ptr> history_pointcloud_lidar;
+  std::vector<pcl::PointCloud<PointType>::Ptr> history_kf_lidar;
+  std::mutex history_kf_lidar_mutex;
+
+  std::mutex loop_info_mutex;
+  struct loop_info
+  {
+      bool loop = false;
+      bool loop_candidate = false;
+      int current_id = -1;
+      std::vector<int> candidate_key;
+      std::vector<float> candidate_dis;
+      std::vector<float> candidate_sim;
+      std::vector<std::pair<std::pair<Eigen::Vector3f, Eigen::Quaternionf>,
+              pcl::PointCloud<PointType>::ConstPtr>> candidate_frame;
+      std::pair<std::pair<Eigen::Vector3f, Eigen::Quaternionf>,
+              pcl::PointCloud<PointType>::ConstPtr> current_kf;
+      std::vector<std::shared_ptr<nano_gicp::CovarianceList>> candidate_frame_normals;
+
+      void reset()
+      {
+          loop = false;
+          loop_candidate = false;
+          candidate_frame.clear();
+          candidate_frame_normals.clear();
+          candidate_key.clear();
+          candidate_dis.clear();
+          candidate_sim.clear();
+      }
+  };
+
+  std::mutex loop_factor_mutex;
+  struct loop_factor_info
+  {
+      // curr target
+      bool loop = false;
+      // curr target
+      std::pair<int, int> factor_id;
+      Eigen::Isometry3f T_current;
+      Eigen::Isometry3f T_target;
+      float sim;
+      float dis;
+
+  };
+  loop_info curr_loop_info;
+  loop_factor_info curr_factor_info;
+
+
 
   bool new_submap_is_ready;
   std::future<void> submap_future;
