@@ -19,7 +19,7 @@ dlio:
     imu: imu
 
   map:
-    waitUntilMove: true
+    waitUntilMove: false
     dense:
       filtered: false
     sparse:
@@ -45,8 +45,8 @@ dlio:
         res: 0.25
 
     keyframe:
-      threshD: 1.0
-      threshR: 45.0
+      threshD: 0.5
+      threshR: 25.0
 
     submap:
       useJaccard: true

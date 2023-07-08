@@ -547,7 +547,7 @@ void dlio::OdomNode::preprocessPoints() {
   // 对点云进行去畸变
   // Deskew the original dlio-type scan
   if (this->deskew_) {
-    std::cout << "Deskew!" << std::endl;
+//    std::cout << "Deskew!" << std::endl;
     this->deskewPointcloud();
 
     if (!this->first_valid_scan) {
@@ -556,7 +556,7 @@ void dlio::OdomNode::preprocessPoints() {
 
   } else {
     // 不去畸变的情况 scan_stamp为消息头的时间
-    std::cout << "No deskew!" << std::endl;
+//    std::cout << "No deskew!" << std::endl;
     this->scan_stamp = this->scan_header_stamp.toSec();
 
     // don't process scans until IMU data is present
@@ -2095,8 +2095,6 @@ void dlio::OdomNode::buildSubmapViaJaccard(dlio::OdomNode::State vehicle_state)
                     this->curr_loop_info.loop_candidate = true;
                     this->curr_loop_info.candidate_key.push_back(this->submap_kf_idx_curr[i]);
                     this->curr_loop_info.candidate_sim.push_back(this->similarity[i]);
-
-
                     this->curr_loop_info.candidate_dis.push_back(d);
                     this->curr_loop_info.candidate_frame.push_back(this->keyframes[this->submap_kf_idx_curr[i]]);
                     lock_loop.unlock();
@@ -2504,6 +2502,7 @@ void dlio::OdomNode::mapping()
 
     while (this->nh.ok())
     {
+        std::chrono::steady_clock::time_point t1 = std::chrono::steady_clock::now();
         // 获取历史关键帧信息
         std::unique_lock<decltype(this->tempKeyframe_mutex)> lock(this->tempKeyframe_mutex);
         history_keyframes_num = this->KeyframesInfo.size();
@@ -2755,6 +2754,9 @@ void dlio::OdomNode::mapping()
             this->global_pose_pub.publish(this->global_pose);
         }
 
+        std::chrono::steady_clock::time_point t2 = std::chrono::steady_clock::now();
+        double time = std::chrono::duration_cast<std::chrono::duration<double>>(t2 - t1).count();
+        std::cout << "Back end cost time = " << time*1000 << " ms" << std::endl;
     }
 
 }
@@ -2802,13 +2804,39 @@ void dlio::OdomNode::performLoop()
 
         if (current_loop_info.loop)
         {
+            // 选取相似度最大的候选关键帧
+            int max_id = std::max_element(current_loop_info.candidate_sim.begin(), current_loop_info.candidate_sim.end()) - current_loop_info.candidate_sim.begin();
+            // 构建候选关键帧子地图
+            pcl::PointCloud<PointType>::Ptr loop_candidate_map(new pcl::PointCloud<PointType>);
+            std::unique_lock<decltype(this->tempKeyframe_mutex)> lock_kf_info(this->tempKeyframe_mutex);
+            KeyframeInfo current_loop_kf_info = this->KeyframesInfo[current_loop_info.candidate_key[max_id]];
+            lock_kf_info.unlock();
+            // 添加闭环候选帧的点云和normal
+            std::shared_ptr<nano_gicp::CovarianceList> submap_normals_ (std::make_shared<nano_gicp::CovarianceList>());
+            *loop_candidate_map += *current_loop_kf_info.pCloud;
+            submap_normals_ ->insert(std::end(*submap_normals_),
+                                     std::begin(*(this->keyframe_normals[current_loop_info.candidate_key[max_id]])),
+                                     std::end(*(this->keyframe_normals[current_loop_info.candidate_key[max_id]])));
+
+            // 添加闭环候选帧子地图的点云和normal
+            std::unique_lock<decltype(this->keyframes_mutex)> lock_kfs(this->keyframes_mutex);
+            for (int i = 0; i < current_loop_kf_info.submap_kf_idx.size(); i++)
+            {
+                *loop_candidate_map += *this->keyframes[current_loop_kf_info.submap_kf_idx[i]].second;
+                submap_normals_ ->insert(std::end(*submap_normals_),
+                                         std::begin(*(this->keyframe_normals[current_loop_kf_info.submap_kf_idx[i]])),
+                                         std::end(*(this->keyframe_normals[current_loop_kf_info.submap_kf_idx[i]])));
+            }
+            lock_kfs.unlock();
+
+
             loop_gicp.setInputSource(curr_loop_info.current_kf.second);
             loop_gicp.calculateSourceCovariances();
-            loop_gicp.registerInputTarget(current_loop_info.candidate_frame[0].second);
+            loop_gicp.registerInputTarget(loop_candidate_map);
 
-            loop_gicp_temp.setInputTarget(current_loop_info.candidate_frame[0].second);
+            loop_gicp_temp.setInputTarget(loop_candidate_map);
             loop_gicp.target_kdtree_ = loop_gicp_temp.target_kdtree_;
-            loop_gicp.setTargetCovariances(current_loop_info.candidate_frame_normals[0]);
+            loop_gicp.setTargetCovariances(submap_normals_);
 
             pcl::PointCloud<PointType>::Ptr aligned (boost::make_shared<pcl::PointCloud<PointType>>());
             loop_gicp.align(*aligned);
@@ -2822,8 +2850,8 @@ void dlio::OdomNode::performLoop()
             auto T_after = T_c * T_before;
             // 闭环候选关键帧的位姿
             Eigen::Isometry3f T_candidate = Eigen::Isometry3f::Identity();
-            T_candidate.translate(current_loop_info.candidate_frame[0].first.first);
-            T_candidate.rotate(current_loop_info.candidate_frame[0].first.second);
+            T_candidate.translate(current_loop_info.candidate_frame[max_id].first.first);
+            T_candidate.rotate(current_loop_info.candidate_frame[max_id].first.second);
 
             std::unique_lock<decltype(this->loop_factor_mutex)> lock_factor(this->loop_factor_mutex);
             this->curr_factor_info.loop = true;
@@ -2833,7 +2861,7 @@ void dlio::OdomNode::performLoop()
             this->curr_factor_info.T_target = T_candidate;
             this->curr_factor_info.sim = current_loop_info.candidate_sim[0];
             this->curr_factor_info.dis = current_loop_info.candidate_dis[0];
-            this->curr_factor_info.factor_id = std::make_pair(current_loop_info.current_id, current_loop_info.candidate_key[0]);
+            this->curr_factor_info.factor_id = std::make_pair(current_loop_info.current_id, current_loop_info.candidate_key[max_id]);
             lock_factor.unlock();
 
             std::cout << "*************Finished loop icp*************" << std::endl;

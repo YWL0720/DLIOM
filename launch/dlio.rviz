@@ -6,6 +6,7 @@ Panels:
       Expanded:
         - /Frames1
         - /Point Clouds1
+        - /Point Clouds1/Dense Map1
         - /Odometry1
         - /Submap1
         - /Global Map1
@@ -121,8 +122,8 @@ Visualization Manager:
           Color: 0; 255; 0
           Color Transformer: Intensity
           Decay Time: 9999
-          Enabled: false
-          Invert Rainbow: false
+          Enabled: true
+          Invert Rainbow: true
           Max Color: 255; 255; 255
           Max Intensity: 1024
           Min Color: 0; 0; 0
@@ -138,7 +139,7 @@ Visualization Manager:
           Unreliable: false
           Use Fixed Frame: true
           Use rainbow: true
-          Value: false
+          Value: true
         - Alpha: 1
           Autocompute Intensity Bounds: false
           Autocompute Value Bounds:
@@ -340,7 +341,7 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz/Orbit
-      Distance: 167.8422088623047
+      Distance: 135.3904266357422
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
