@@ -23,8 +23,23 @@ public:
   int count;
   void mapping();
   void performLoop();
+  void saveKeyframeAndUpdateFactor();
+  bool isKeyframe();
+  void addOdomFactor();
+  void addLoopFactor();
+  void loopVisual();
+  void correctPoses();
+  void updateMap();
+  void updateCurrentInfo();
+  void saveFirstKeyframeAndUpdateFactor();
 private:
 
+  //
+  visualization_msgs::Marker loop_marker;
+  bool kf_update;
+  bool isLoop;
+  std::vector<std::pair<int, int>> history_loop_id;
+  pcl::PointCloud<PointType>::Ptr global_map;
   struct State;
   struct ImuMeas;
 
@@ -159,6 +174,8 @@ private:
   std::vector<ros::Time> keyframe_timestamps;
   std::vector<std::shared_ptr<const nano_gicp::CovarianceList>> keyframe_normals;
   std::vector<Eigen::Matrix4f, Eigen::aligned_allocator<Eigen::Matrix4f>> keyframe_transformations;
+  std::vector<Eigen::Matrix4f, Eigen::aligned_allocator<Eigen::Matrix4f>> keyframe_transformations_prior;
+
   std::mutex keyframes_mutex;
   std::mutex tempKeyframe_mutex;
 
