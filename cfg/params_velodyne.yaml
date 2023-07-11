@@ -45,8 +45,8 @@ dlio:
         res: 0.25
 
     keyframe:
-      threshD: 0.5
-      threshR: 25.0
+      threshD: 0.25
+      threshR: 10.0
 
     submap:
       useJaccard: true

@@ -814,8 +814,8 @@ void dlio::OdomNode::initializeInputTarget() {
   lock_his_lidar.unlock();
 
 
-  this->tempKeyframe.pos = this->lidarPose.p;
-  this->tempKeyframe.rot = this->lidarPose.q;
+  this->tempKeyframe.pos = this->state.p;
+  this->tempKeyframe.rot = this->state.q;
   this->tempKeyframe.vSim = {1};
   this->tempKeyframe.submap_kf_idx = {0};
   pcl::copyPointCloud(*this->current_scan, *this->tempKeyframe.pCloud);
@@ -2119,14 +2119,14 @@ void dlio::OdomNode::buildSubmapViaJaccard(dlio::OdomNode::State vehicle_state)
                 submap_kf_idx_curr_final.push_back(this->submap_kf_idx_curr[i]);
 
             // loop
-            if ((this->num_processed_keyframes - this->submap_kf_idx_curr[i]) > 30)
+            if ((this->num_processed_keyframes - this->submap_kf_idx_curr[i]) > 30 && (this->num_processed_keyframes - last_loop_id) > 10)
             {
                 lock.lock();
                 float d = sqrt(pow(vehicle_state.p[0] - this->keyframes[this->submap_kf_idx_curr[i]].first.first[0], 2) +
                                pow(vehicle_state.p[1] - this->keyframes[this->submap_kf_idx_curr[i]].first.first[1], 2) +
                                pow(vehicle_state.p[2] - this->keyframes[this->submap_kf_idx_curr[i]].first.first[2], 2));
                 lock.unlock();
-                if (d < 10)
+                if (d < 15)
                 {
                     std::cout << "**************Build map find loop ************" << std::endl;
                     std::unique_lock<decltype(this->loop_info_mutex)> lock_loop(this->loop_info_mutex);
@@ -2136,6 +2136,7 @@ void dlio::OdomNode::buildSubmapViaJaccard(dlio::OdomNode::State vehicle_state)
                     this->curr_loop_info.candidate_dis.push_back(d);
                     this->curr_loop_info.candidate_frame.push_back(this->keyframes[this->submap_kf_idx_curr[i]]);
                     lock_loop.unlock();
+                    last_loop_id = this->num_processed_keyframes;
                 }
             }
 
@@ -2811,16 +2812,16 @@ void dlio::OdomNode::performLoop()
     loop_info current_loop_info;
 
     nano_gicp::NanoGICP<PointType, PointType> loop_gicp;
-    loop_gicp.setMaxCorrespondenceDistance(this->gicp_max_corr_dist_);
-    loop_gicp.setMaximumIterations(this->gicp_max_iter_);
+    loop_gicp.setMaxCorrespondenceDistance(this->gicp_max_corr_dist_ * 2);
+    loop_gicp.setMaximumIterations(this->gicp_max_iter_ * 2);
     loop_gicp.setCorrespondenceRandomness(this->gicp_k_correspondences_);
     loop_gicp.setTransformationEpsilon(this->gicp_transformation_ep_);
     loop_gicp.setRotationEpsilon(this->gicp_rotation_ep_);
     loop_gicp.setInitialLambdaFactor(this->gicp_init_lambda_factor_);
 
     nano_gicp::NanoGICP<PointType, PointType> loop_gicp_temp;
-    loop_gicp_temp.setMaxCorrespondenceDistance(this->gicp_max_corr_dist_);
-    loop_gicp_temp.setMaximumIterations(this->gicp_max_iter_);
+    loop_gicp_temp.setMaxCorrespondenceDistance(this->gicp_max_corr_dist_ * 2);
+    loop_gicp_temp.setMaximumIterations(this->gicp_max_iter_ * 2);
     loop_gicp_temp.setCorrespondenceRandomness(this->gicp_k_correspondences_);
     loop_gicp_temp.setTransformationEpsilon(this->gicp_transformation_ep_);
     loop_gicp_temp.setRotationEpsilon(this->gicp_rotation_ep_);
@@ -2844,31 +2845,71 @@ void dlio::OdomNode::performLoop()
         {
             // 选取相似度最大的候选关键帧
             int max_id = std::max_element(current_loop_info.candidate_sim.begin(), current_loop_info.candidate_sim.end()) - current_loop_info.candidate_sim.begin();
-            // 构建候选关键帧子地图
-            pcl::PointCloud<PointType>::Ptr loop_candidate_map(new pcl::PointCloud<PointType>);
+
+            std::unique_lock<decltype(this->history_kf_lidar_mutex)> lock_his(this->history_kf_lidar_mutex);
+            auto his_lidar = this->history_kf_lidar;
+            lock_his.unlock();
+
+            std::unique_lock<decltype(this->keyframes_mutex)> lock_kf(this->keyframes_mutex);
+            auto kfs = this->keyframes;
+            auto kfs_norm = this->keyframe_normals;
+            auto kfs_prior = this->keyframe_transformations_prior;
+            lock_kf.unlock();
+
             std::unique_lock<decltype(this->tempKeyframe_mutex)> lock_kf_info(this->tempKeyframe_mutex);
             KeyframeInfo current_loop_kf_info = this->KeyframesInfo[current_loop_info.candidate_key[max_id]];
             lock_kf_info.unlock();
+
+            // 将当前帧点云转换到最新的世界坐标系下
+            pcl::PointCloud<PointType>::Ptr current_cloud(new pcl::PointCloud<PointType>);
+            Eigen::Isometry3f tempT = Eigen::Isometry3f::Identity();
+            tempT.translate(kfs[current_loop_info.current_id].first.first);
+            tempT.rotate(kfs[current_loop_info.current_id].first.second);
+            pcl::transformPointCloud(*his_lidar[current_loop_info.current_id], *current_cloud, tempT.matrix());
+
+
             // 添加闭环候选帧的点云和normal
+            pcl::PointCloud<PointType>::Ptr loop_candidate_map(new pcl::PointCloud<PointType>);
             std::shared_ptr<nano_gicp::CovarianceList> submap_normals_ (std::make_shared<nano_gicp::CovarianceList>());
-            *loop_candidate_map += *current_loop_kf_info.pCloud;
-            submap_normals_ ->insert(std::end(*submap_normals_),
-                                     std::begin(*(this->keyframe_normals[current_loop_info.candidate_key[max_id]])),
-                                     std::end(*(this->keyframe_normals[current_loop_info.candidate_key[max_id]])));
+
+            pcl::PointCloud<PointType>::Ptr temp_cloud(new pcl::PointCloud<PointType>);
+            tempT = Eigen::Isometry3f::Identity();
+            tempT.translate(kfs[current_loop_info.candidate_key[max_id]].first.first);
+            tempT.rotate(kfs[current_loop_info.candidate_key[max_id]].first.second);
+            pcl::transformPointCloud(*his_lidar[current_loop_info.candidate_key[max_id]], *temp_cloud, tempT.matrix());
+
+            auto raw_covariances = kfs_norm[current_loop_info.candidate_key[max_id]];
+            auto T_pr = kfs_prior[current_loop_info.candidate_key[max_id]];
+            std::shared_ptr<nano_gicp::CovarianceList> transformed_covariances (std::make_shared<nano_gicp::CovarianceList>(kfs_norm[current_loop_info.candidate_key[max_id]]->size()));
+            std::transform(raw_covariances->begin(), raw_covariances->end(), transformed_covariances->begin(),
+                           [&](Eigen::Matrix4d cov) { return (tempT.matrix() * T_pr.inverse()).cast<double>() * cov * (tempT.matrix() * T_pr.inverse()).transpose().cast<double>(); });
+
+            *loop_candidate_map += *temp_cloud;
+            *submap_normals_->insert(std::end(*submap_normals_), std::begin(*transformed_covariances), std::end(*transformed_covariances));
+
+
 
             // 添加闭环候选帧子地图的点云和normal
             std::unique_lock<decltype(this->keyframes_mutex)> lock_kfs(this->keyframes_mutex);
             for (int i = 0; i < current_loop_kf_info.submap_kf_idx.size(); i++)
             {
-                *loop_candidate_map += *this->keyframes[current_loop_kf_info.submap_kf_idx[i]].second;
-                submap_normals_ ->insert(std::end(*submap_normals_),
-                                         std::begin(*(this->keyframe_normals[current_loop_kf_info.submap_kf_idx[i]])),
-                                         std::end(*(this->keyframe_normals[current_loop_kf_info.submap_kf_idx[i]])));
+                tempT = Eigen::Isometry3f::Identity();
+                tempT.translate(kfs[current_loop_kf_info.submap_kf_idx[i]].first.first);
+                tempT.rotate(kfs[current_loop_kf_info.submap_kf_idx[i]].first.second);
+                pcl::transformPointCloud(*his_lidar[current_loop_kf_info.submap_kf_idx[i]], *temp_cloud, tempT.matrix());
+                *loop_candidate_map += *temp_cloud;
+
+                raw_covariances = kfs_norm[current_loop_kf_info.submap_kf_idx[i]];
+                T_pr = kfs_prior[current_loop_kf_info.submap_kf_idx[i]];
+                std::shared_ptr<nano_gicp::CovarianceList> transformed_covariances_ (std::make_shared<nano_gicp::CovarianceList>(kfs_norm[current_loop_info.candidate_key[max_id]]->size()));
+                std::transform(raw_covariances->begin(), raw_covariances->end(), transformed_covariances_->begin(),
+                               [&](Eigen::Matrix4d cov) { return (tempT * T_pr.inverse()).cast<double>() * cov * (tempT * T_pr.inverse()).transpose().cast<double>(); });
+                *submap_normals_->insert(std::end(*submap_normals_), std::begin(*transformed_covariances_), std::end(*transformed_covariances_));
             }
             lock_kfs.unlock();
 
 
-            loop_gicp.setInputSource(curr_loop_info.current_kf.second);
+            loop_gicp.setInputSource(current_cloud);
             loop_gicp.calculateSourceCovariances();
             loop_gicp.registerInputTarget(loop_candidate_map);
 
@@ -2879,6 +2920,7 @@ void dlio::OdomNode::performLoop()
             pcl::PointCloud<PointType>::Ptr aligned (boost::make_shared<pcl::PointCloud<PointType>>());
             loop_gicp.align(*aligned);
 
+            float score = loop_gicp.getFitnessScore();
             auto T_c = loop_gicp.getFinalTransformation();
             // 闭环优化前当前关键帧的位姿
             Eigen::Isometry3f T_before = Eigen::Isometry3f::Identity();
@@ -2886,6 +2928,13 @@ void dlio::OdomNode::performLoop()
             T_before.rotate(current_loop_info.current_kf.first.second);
             // 优化后的当前关键帧位姿
             auto T_after = T_c * T_before;
+
+            std::cout << "=========================" << std::endl;
+            std::cout << "After loop pos = " << T_after.translation() << std::endl;
+//            std::cout << "After loop rot = " << T_after.rotation() << std::endl;
+            std::cout << "=========================" << std::endl;
+
+
             // 闭环候选关键帧的位姿
             Eigen::Isometry3f T_candidate = Eigen::Isometry3f::Identity();
             T_candidate.translate(current_loop_info.candidate_frame[max_id].first.first);
@@ -2897,8 +2946,8 @@ void dlio::OdomNode::performLoop()
             this->curr_factor_info.T_current.translate(T_after.translation());
             this->curr_factor_info.T_current.rotate(T_after.rotation());
             this->curr_factor_info.T_target = T_candidate;
-            this->curr_factor_info.sim = current_loop_info.candidate_sim[0];
-            this->curr_factor_info.dis = current_loop_info.candidate_dis[0];
+            this->curr_factor_info.sim = current_loop_info.candidate_sim[max_id] * score;
+            this->curr_factor_info.dis = current_loop_info.candidate_dis[max_id];
             this->curr_factor_info.factor_id = std::make_pair(current_loop_info.current_id, current_loop_info.candidate_key[max_id]);
             lock_factor.unlock();
 
@@ -3031,8 +3080,8 @@ void dlio::OdomNode::addOdomFactor()
         // 当前帧匹配的子地图关键帧相似度
         std::vector<float> curr_sim = current_kf_info.vSim;
         // 当前帧的位姿
-        gtsam::Pose3 poseTo = state2Pose3(this->lidarPose.q,
-                                          this->lidarPose.p);
+        gtsam::Pose3 poseTo = state2Pose3(this->state.q,
+                                          this->state.p);
         // 遍历与当前帧匹配的子地图关键帧
         for (int i = 0; i < curr_submap_id.size(); i++)
         {
@@ -3104,8 +3153,10 @@ void dlio::OdomNode::addLoopFactor()
     if (current_loop_factor_info.loop)
     {
         this->isLoop = true;
-        gtsam::noiseModel::Diagonal::shared_ptr loopNoise = gtsam::noiseModel::Diagonal::Variances(
-                (gtsam::Vector(6) << 1e-12, 1e-12, 1e-12, 1e-12, 1e-12, 1e-12).finished());
+        std::cout << "Back end processing loop" << std::endl;
+        gtsam::Vector vector6(6);
+        vector6 << current_loop_factor_info.sim, current_loop_factor_info.sim, current_loop_factor_info.sim, current_loop_factor_info.sim, current_loop_factor_info.sim, current_loop_factor_info.sim;
+        gtsam::noiseModel::Diagonal::shared_ptr loopNoise = gtsam::noiseModel::Diagonal::Variances(vector6);
 
         gtsam::Pose3 poseFrom = state2Pose3(Eigen::Quaternionf(current_loop_factor_info.T_target.rotation()),
                                             current_loop_factor_info.T_target.translation());
@@ -3155,6 +3206,9 @@ void dlio::OdomNode::correctPoses()
             this->global_pose.poses.push_back(p);
         }
         lock_kf.unlock();
+        this->lidarPose.p = this->iSAMCurrentEstimate.at<gtsam::Pose3>(this->iSAMCurrentEstimate.size() - 1).translation().cast<float>();
+        this->lidarPose.q = this->iSAMCurrentEstimate.at<gtsam::Pose3>(this->iSAMCurrentEstimate.size() - 1).rotation().toQuaternion().cast<float>();
+        this->updateState();
     }
     else
     {
@@ -3225,7 +3279,7 @@ void dlio::OdomNode::updateMap()
         curr_T.rotate(q);
 
         std::unique_lock<decltype(this->keyframes_mutex)> lock_kf_his(this->keyframes_mutex);
-        pcl::transformPointCloud(*this->keyframes[this->iSAMCurrentEstimate.size() - 1].second, *curr_kf, curr_T.matrix() * this->keyframe_transformations_prior[this->iSAMCurrentEstimate.size() - 1].inverse());
+        pcl::transformPointCloud(*this->history_kf_lidar[this->iSAMCurrentEstimate.size() - 1], *curr_kf, curr_T.matrix()) ;
         lock_kf_his.unlock();
 
 
@@ -3250,7 +3304,7 @@ void dlio::OdomNode::updateCurrentInfo()
 {
     // 更新关键帧信息
     std::unique_lock<decltype(this->keyframes_mutex)> lock(this->keyframes_mutex);
-    this->keyframes.push_back(std::make_pair(std::make_pair(this->lidarPose.p, this->lidarPose.q), this->current_scan));
+    this->keyframes.push_back(std::make_pair(std::make_pair(this->state.p, this->state.q), this->current_scan));
     this->keyframe_timestamps.push_back(this->scan_header_stamp);
     this->keyframe_normals.push_back(this->gicp.getSourceCovariances());
     this->keyframe_transformations.push_back(this->T_corr);
@@ -3259,8 +3313,9 @@ void dlio::OdomNode::updateCurrentInfo()
 
     std::unique_lock<decltype(this->tempKeyframe_mutex)> lock_temp(this->tempKeyframe_mutex);
     pcl::copyPointCloud(*this->current_scan_lidar, *this->tempKeyframe.pCloud);
-    this->tempKeyframe.rot = this->lidarPose.q;
-    this->tempKeyframe.pos = this->lidarPose.p;
+    this->tempKeyframe.rot = this->state.q;
+    this->tempKeyframe.pos = this->state.p;
+    this->KeyframesInfo.push_back(this->tempKeyframe);
     lock_temp.unlock();
 
     pcl::PointCloud<PointType>::Ptr temp(new pcl::PointCloud<PointType>);
