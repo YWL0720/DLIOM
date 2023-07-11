@@ -74,6 +74,7 @@ std::string to_string_with_precision(const T a_value, const int n = 6)
 #include <pcl_ros/point_cloud.h>
 #include <pcl_ros/transforms.h>
 #include <pcl/octree/octree_search.h>
+#include <pcl/registration/icp.h>
 // DLIO
 #include <nano_gicp/nano_gicp.h>
 #include <direct_lidar_inertial_odometry/save_pcd.h>

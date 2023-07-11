@@ -135,6 +135,7 @@ dlio::OdomNode::OdomNode(ros::NodeHandle node_handle) : nh(node_handle) {
   this->crop.setMax(Eigen::Vector4f(this->crop_size_, this->crop_size_, this->crop_size_, 1.0));
 
   this->voxel.setLeafSize(this->vf_res_, this->vf_res_, this->vf_res_);
+  this->voxel_global.setLeafSize(this->vf_res_, this->vf_res_, this->vf_res_);
 
   this->metrics.spaciousness.push_back(0.);
   this->metrics.density.push_back(this->gicp_max_corr_dist_);
@@ -195,7 +196,7 @@ dlio::OdomNode::OdomNode(ros::NodeHandle node_handle) : nh(node_handle) {
 
 
 
-//  this->mapping_thread = std::thread(&dlio::OdomNode::mapping, this);
+  this->mapping_thread = std::thread(&dlio::OdomNode::updateMap, this);
   this->loop_thread = std::thread(&dlio::OdomNode::performLoop, this);
 
 }
@@ -973,7 +974,6 @@ void dlio::OdomNode::callbackPointCloud(const sensor_msgs::PointCloud2ConstPtr& 
 }
 
 void dlio::OdomNode::callbackImu(const sensor_msgs::Imu::ConstPtr& imu_raw) {
-
   // 第一帧标志位
   this->first_imu_received = true;
   // 将原始的IMU数据转换到base_link下
@@ -2811,28 +2811,13 @@ void dlio::OdomNode::performLoop()
 {
     loop_info current_loop_info;
 
-    nano_gicp::NanoGICP<PointType, PointType> loop_gicp;
-    loop_gicp.setMaxCorrespondenceDistance(this->gicp_max_corr_dist_ * 2);
-    loop_gicp.setMaximumIterations(this->gicp_max_iter_ * 2);
-    loop_gicp.setCorrespondenceRandomness(this->gicp_k_correspondences_);
-    loop_gicp.setTransformationEpsilon(this->gicp_transformation_ep_);
-    loop_gicp.setRotationEpsilon(this->gicp_rotation_ep_);
-    loop_gicp.setInitialLambdaFactor(this->gicp_init_lambda_factor_);
-
-    nano_gicp::NanoGICP<PointType, PointType> loop_gicp_temp;
-    loop_gicp_temp.setMaxCorrespondenceDistance(this->gicp_max_corr_dist_ * 2);
-    loop_gicp_temp.setMaximumIterations(this->gicp_max_iter_ * 2);
-    loop_gicp_temp.setCorrespondenceRandomness(this->gicp_k_correspondences_);
-    loop_gicp_temp.setTransformationEpsilon(this->gicp_transformation_ep_);
-    loop_gicp_temp.setRotationEpsilon(this->gicp_rotation_ep_);
-    loop_gicp_temp.setInitialLambdaFactor(this->gicp_init_lambda_factor_);
-
-    pcl::Registration<PointType, PointType>::KdTreeReciprocalPtr temp;
-    loop_gicp.setSearchMethodSource(temp, true);
-    loop_gicp.setSearchMethodTarget(temp, true);
-    loop_gicp_temp.setSearchMethodSource(temp, true);
-    loop_gicp_temp.setSearchMethodTarget(temp, true);
-
+    // ICP Settings
+    static pcl::IterativeClosestPoint<PointType, PointType> icp;
+    icp.setMaxCorrespondenceDistance(this->gicp_max_corr_dist_*2);
+    icp.setMaximumIterations(100);
+    icp.setTransformationEpsilon(1e-6);
+    icp.setEuclideanFitnessEpsilon(1e-6);
+    icp.setRANSACIterations(0);
 
 
     while(this->nh.ok())
@@ -2852,8 +2837,6 @@ void dlio::OdomNode::performLoop()
 
             std::unique_lock<decltype(this->keyframes_mutex)> lock_kf(this->keyframes_mutex);
             auto kfs = this->keyframes;
-            auto kfs_norm = this->keyframe_normals;
-            auto kfs_prior = this->keyframe_transformations_prior;
             lock_kf.unlock();
 
             std::unique_lock<decltype(this->tempKeyframe_mutex)> lock_kf_info(this->tempKeyframe_mutex);
@@ -2870,7 +2853,6 @@ void dlio::OdomNode::performLoop()
 
             // 添加闭环候选帧的点云和normal
             pcl::PointCloud<PointType>::Ptr loop_candidate_map(new pcl::PointCloud<PointType>);
-            std::shared_ptr<nano_gicp::CovarianceList> submap_normals_ (std::make_shared<nano_gicp::CovarianceList>());
 
             pcl::PointCloud<PointType>::Ptr temp_cloud(new pcl::PointCloud<PointType>);
             tempT = Eigen::Isometry3f::Identity();
@@ -2878,19 +2860,10 @@ void dlio::OdomNode::performLoop()
             tempT.rotate(kfs[current_loop_info.candidate_key[max_id]].first.second);
             pcl::transformPointCloud(*his_lidar[current_loop_info.candidate_key[max_id]], *temp_cloud, tempT.matrix());
 
-            auto raw_covariances = kfs_norm[current_loop_info.candidate_key[max_id]];
-            auto T_pr = kfs_prior[current_loop_info.candidate_key[max_id]];
-            std::shared_ptr<nano_gicp::CovarianceList> transformed_covariances (std::make_shared<nano_gicp::CovarianceList>(kfs_norm[current_loop_info.candidate_key[max_id]]->size()));
-            std::transform(raw_covariances->begin(), raw_covariances->end(), transformed_covariances->begin(),
-                           [&](Eigen::Matrix4d cov) { return (tempT.matrix() * T_pr.inverse()).cast<double>() * cov * (tempT.matrix() * T_pr.inverse()).transpose().cast<double>(); });
-
             *loop_candidate_map += *temp_cloud;
-            *submap_normals_->insert(std::end(*submap_normals_), std::begin(*transformed_covariances), std::end(*transformed_covariances));
-
-
 
             // 添加闭环候选帧子地图的点云和normal
-            std::unique_lock<decltype(this->keyframes_mutex)> lock_kfs(this->keyframes_mutex);
+
             for (int i = 0; i < current_loop_kf_info.submap_kf_idx.size(); i++)
             {
                 tempT = Eigen::Isometry3f::Identity();
@@ -2898,37 +2871,29 @@ void dlio::OdomNode::performLoop()
                 tempT.rotate(kfs[current_loop_kf_info.submap_kf_idx[i]].first.second);
                 pcl::transformPointCloud(*his_lidar[current_loop_kf_info.submap_kf_idx[i]], *temp_cloud, tempT.matrix());
                 *loop_candidate_map += *temp_cloud;
-
-                raw_covariances = kfs_norm[current_loop_kf_info.submap_kf_idx[i]];
-                T_pr = kfs_prior[current_loop_kf_info.submap_kf_idx[i]];
-                std::shared_ptr<nano_gicp::CovarianceList> transformed_covariances_ (std::make_shared<nano_gicp::CovarianceList>(kfs_norm[current_loop_info.candidate_key[max_id]]->size()));
-                std::transform(raw_covariances->begin(), raw_covariances->end(), transformed_covariances_->begin(),
-                               [&](Eigen::Matrix4d cov) { return (tempT * T_pr.inverse()).cast<double>() * cov * (tempT * T_pr.inverse()).transpose().cast<double>(); });
-                *submap_normals_->insert(std::end(*submap_normals_), std::begin(*transformed_covariances_), std::end(*transformed_covariances_));
             }
-            lock_kfs.unlock();
+
+            icp.setInputSource(current_cloud);
+            icp.setInputTarget(loop_candidate_map);
+            pcl::PointCloud<PointType>::Ptr unused_result(new pcl::PointCloud<PointType>());
+            icp.align(*unused_result);
 
 
-            loop_gicp.setInputSource(current_cloud);
-            loop_gicp.calculateSourceCovariances();
-            loop_gicp.registerInputTarget(loop_candidate_map);
+            if (icp.hasConverged() == false)
+            {
+                std::cout << "Perform loop find icp not converged" << std::endl;
+                continue;
+            }
 
-            loop_gicp_temp.setInputTarget(loop_candidate_map);
-            loop_gicp.target_kdtree_ = loop_gicp_temp.target_kdtree_;
-            loop_gicp.setTargetCovariances(submap_normals_);
+            auto T_c = icp.getFinalTransformation();
 
-            pcl::PointCloud<PointType>::Ptr aligned (boost::make_shared<pcl::PointCloud<PointType>>());
-            loop_gicp.align(*aligned);
-
-            float score = loop_gicp.getFitnessScore();
-            auto T_c = loop_gicp.getFinalTransformation();
             // 闭环优化前当前关键帧的位姿
             Eigen::Isometry3f T_before = Eigen::Isometry3f::Identity();
             T_before.translate(current_loop_info.current_kf.first.first);
             T_before.rotate(current_loop_info.current_kf.first.second);
             // 优化后的当前关键帧位姿
             auto T_after = T_c * T_before;
-
+            float score = icp.getFitnessScore();
             std::cout << "=========================" << std::endl;
             std::cout << "After loop pos = " << T_after.translation() << std::endl;
 //            std::cout << "After loop rot = " << T_after.rotation() << std::endl;
@@ -3154,9 +3119,8 @@ void dlio::OdomNode::addLoopFactor()
     {
         this->isLoop = true;
         std::cout << "Back end processing loop" << std::endl;
-        gtsam::Vector vector6(6);
-        vector6 << current_loop_factor_info.sim, current_loop_factor_info.sim, current_loop_factor_info.sim, current_loop_factor_info.sim, current_loop_factor_info.sim, current_loop_factor_info.sim;
-        gtsam::noiseModel::Diagonal::shared_ptr loopNoise = gtsam::noiseModel::Diagonal::Variances(vector6);
+        gtsam::noiseModel::Diagonal::shared_ptr loopNoise = gtsam::noiseModel::Diagonal::Variances(
+                (gtsam::Vector(6) << 1e-8, 1e-8, 1e-8, 1e-6, 1e-6, 1e-6).finished() * current_loop_factor_info.sim);
 
         gtsam::Pose3 poseFrom = state2Pose3(Eigen::Quaternionf(current_loop_factor_info.T_target.rotation()),
                                             current_loop_factor_info.T_target.translation());
@@ -3206,9 +3170,6 @@ void dlio::OdomNode::correctPoses()
             this->global_pose.poses.push_back(p);
         }
         lock_kf.unlock();
-        this->lidarPose.p = this->iSAMCurrentEstimate.at<gtsam::Pose3>(this->iSAMCurrentEstimate.size() - 1).translation().cast<float>();
-        this->lidarPose.q = this->iSAMCurrentEstimate.at<gtsam::Pose3>(this->iSAMCurrentEstimate.size() - 1).rotation().toQuaternion().cast<float>();
-        this->updateState();
     }
     else
     {
@@ -3237,67 +3198,83 @@ void dlio::OdomNode::correctPoses()
 
 void dlio::OdomNode::updateMap()
 {
-    if (this->isLoop)
+    while (this->nh.ok())
     {
-        this->global_map->clear();
-        std::unique_lock<decltype(this->keyframes_mutex)> lock_kf(this->keyframes_mutex);
-        for (int i = 0; i < this->iSAMCurrentEstimate.size() ; i++)
+
+        std::unique_lock<decltype(this->update_map_info_mutex)> lock_update_map(this->update_map_info_mutex);
+        if (this->update_map_info.size() == 0)
+        {
+            lock_update_map.unlock();
+            continue;
+        }
+        auto map_info = this->update_map_info.front();
+        this->update_map_info.pop();
+        lock_update_map.unlock();
+
+        gtsam::Values currentEstimate = map_info.second;
+        if (map_info.first)
+        {
+            std::cout << "start update map" << std::endl;
+            std::unique_lock<decltype(this->history_kf_lidar_mutex)> lock_kf_his(this->history_kf_lidar_mutex);
+            auto his = this->history_kf_lidar;
+            lock_kf_his.unlock();
+            this->global_map->clear();
+            for (int i = 0; i < currentEstimate.size() ; i++)
+            {
+                pcl::PointCloud<PointType>::Ptr curr_kf(new pcl::PointCloud<PointType>);
+                Eigen::Isometry3f curr_T = Eigen::Isometry3f::Identity();
+
+                Eigen::Quaternionf q =currentEstimate.at<gtsam::Pose3>(i).rotation().toQuaternion().cast<float>();
+                curr_T.translate(currentEstimate.at<gtsam::Pose3>(i).translation().cast<float>());
+                curr_T.rotate(q);
+
+                pcl::transformPointCloud(*his[i], *curr_kf, curr_T.matrix());
+
+                *this->global_map += *curr_kf;
+                this->voxel_global.setInputCloud(this->global_map);
+                this->voxel_global.filter(*this->global_map);
+            }
+
+            sensor_msgs::PointCloud2 map_msg;
+            pcl::toROSMsg(*this->global_map, map_msg);
+            map_msg.header.stamp = ros::Time::now();
+            map_msg.header.frame_id = this->odom_frame;
+
+            this->global_map_pub.publish(map_msg);
+            std::cout << "finish update map" << std::endl;
+
+        }
+        else
         {
             pcl::PointCloud<PointType>::Ptr curr_kf(new pcl::PointCloud<PointType>);
             Eigen::Isometry3f curr_T = Eigen::Isometry3f::Identity();
 
-            Eigen::Quaternionf q =this->iSAMCurrentEstimate.at<gtsam::Pose3>(i).rotation().toQuaternion().cast<float>();
-            curr_T.translate(this->iSAMCurrentEstimate.at<gtsam::Pose3>(i).translation().cast<float>());
+            Eigen::Quaternionf q =currentEstimate.at<gtsam::Pose3>(currentEstimate.size() - 1).rotation().toQuaternion().cast<float>();
+            curr_T.translate(currentEstimate.at<gtsam::Pose3>(currentEstimate.size() - 1).translation().cast<float>());
             curr_T.rotate(q);
 
-
-            std::unique_lock<decltype(this->history_kf_lidar_mutex)> lock_kf_his(this->history_kf_lidar_mutex);
-            pcl::transformPointCloud(*this->history_kf_lidar[i], *curr_kf, curr_T.matrix());
+            std::unique_lock<decltype(this->keyframes_mutex)> lock_kf_his(this->keyframes_mutex);
+            pcl::transformPointCloud(*this->history_kf_lidar[currentEstimate.size() - 1], *curr_kf, curr_T.matrix()) ;
             lock_kf_his.unlock();
 
+
+            this->voxel_global.setInputCloud(curr_kf);
+            this->voxel_global.filter(*curr_kf);
             *this->global_map += *curr_kf;
-            this->voxel.setInputCloud(this->global_map);
-            this->voxel.filter(*this->global_map);
+            this->voxel_global.setInputCloud(this->global_map);
+            this->voxel_global.filter(*this->global_map);
+
+
+            sensor_msgs::PointCloud2 map_msg;
+            pcl::toROSMsg(*this->global_map, map_msg);
+            map_msg.header.stamp = this->scan_header_stamp;
+            map_msg.header.frame_id = this->odom_frame;
+
+            this->global_map_pub.publish(map_msg);
 
         }
-        lock_kf.unlock();
-
-        sensor_msgs::PointCloud2 map_msg;
-        pcl::toROSMsg(*this->global_map, map_msg);
-        map_msg.header.stamp = ros::Time::now();
-        map_msg.header.frame_id = this->odom_frame;
-
-        this->global_map_pub.publish(map_msg);
     }
-    else
-    {
-        pcl::PointCloud<PointType>::Ptr curr_kf(new pcl::PointCloud<PointType>);
-        Eigen::Isometry3f curr_T = Eigen::Isometry3f::Identity();
 
-        Eigen::Quaternionf q =this->iSAMCurrentEstimate.at<gtsam::Pose3>(this->iSAMCurrentEstimate.size() - 1).rotation().toQuaternion().cast<float>();
-        curr_T.translate(this->iSAMCurrentEstimate.at<gtsam::Pose3>(this->iSAMCurrentEstimate.size() - 1).translation().cast<float>());
-        curr_T.rotate(q);
-
-        std::unique_lock<decltype(this->keyframes_mutex)> lock_kf_his(this->keyframes_mutex);
-        pcl::transformPointCloud(*this->history_kf_lidar[this->iSAMCurrentEstimate.size() - 1], *curr_kf, curr_T.matrix()) ;
-        lock_kf_his.unlock();
-
-
-        voxel.setInputCloud(curr_kf);
-        voxel.filter(*curr_kf);
-        *this->global_map += *curr_kf;
-        voxel.setInputCloud(this->global_map);
-        voxel.filter(*this->global_map);
-
-
-        sensor_msgs::PointCloud2 map_msg;
-        pcl::toROSMsg(*this->global_map, map_msg);
-        map_msg.header.stamp = this->scan_header_stamp;
-        map_msg.header.frame_id = this->odom_frame;
-
-        this->global_map_pub.publish(map_msg);
-
-    }
 }
 
 void dlio::OdomNode::updateCurrentInfo()
@@ -3328,18 +3305,9 @@ void dlio::OdomNode::updateCurrentInfo()
     {
         this->curr_loop_info.loop_candidate = false;
         this->curr_loop_info.loop = true;
-        std::shared_ptr<nano_gicp::CovarianceList> normals_temp(std::make_shared<nano_gicp::CovarianceList>());
-        this->curr_loop_info.current_kf = this->keyframes.back();
         std::unique_lock<decltype(this->keyframes_mutex)> lock_kf(this->keyframes_mutex);
+        this->curr_loop_info.current_kf = this->keyframes.back();
         this->curr_loop_info.current_id = this->keyframes.size() - 1;
-        for (int i = 0; i < this->curr_loop_info.candidate_key.size(); i++)
-        {
-            normals_temp->insert(std::end(*normals_temp),
-                                 std::begin(*(this->keyframe_normals[this->curr_loop_info.candidate_key[i]])),
-                                 std::end(*(this->keyframe_normals[this->curr_loop_info.candidate_key[i]])));
-            this->curr_loop_info.candidate_frame_normals.push_back(normals_temp);
-            normals_temp->clear();
-        }
         lock_kf.unlock();
     }
     lock_loop.unlock();
@@ -3358,6 +3326,9 @@ void dlio::OdomNode::saveKeyframeAndUpdateFactor()
         // 添加闭环因子
         this->addLoopFactor();
 
+//        gtSAMgraph.print("GTSAM Graph:\n");
+
+
         this->isam->update(this->gtSAMgraph, this->initialEstimate);
         this->isam->update();
 
@@ -3375,34 +3346,38 @@ void dlio::OdomNode::saveKeyframeAndUpdateFactor()
         std::unique_lock<decltype(this->tempKeyframe_mutex)> lock_temp(this->tempKeyframe_mutex);
         KeyframeInfo his_info = this->tempKeyframe;
         lock_temp.unlock();
-        std::cout << "========================================" << std::endl;
-        std::cout << "Before rot = " << his_info.rot.w() << " "
-                  << his_info.rot.x() << " "
-                  << his_info.rot.y() << " "
-                  << his_info.rot.z() << " "
-                  << "Before pos = "
-                  << his_info.pos.x() << " "
-                  << his_info.pos.y() << " "
-                  << his_info.pos.z() << " " << std::endl;
-
-
-        std::cout << "After rot = "
-                  << iSAMCurrentEstimate.at<gtsam::Pose3>(iSAMCurrentEstimate.size() - 1).rotation().toQuaternion().w() << " "
-                  << iSAMCurrentEstimate.at<gtsam::Pose3>(iSAMCurrentEstimate.size() - 1).rotation().toQuaternion().x() << " "
-                  << iSAMCurrentEstimate.at<gtsam::Pose3>(iSAMCurrentEstimate.size() - 1).rotation().toQuaternion().y() << " "
-                  << iSAMCurrentEstimate.at<gtsam::Pose3>(iSAMCurrentEstimate.size() - 1).rotation().toQuaternion().z() << " "
-                  << "After pos = "
-                  << iSAMCurrentEstimate.at<gtsam::Pose3>(iSAMCurrentEstimate.size() - 1).translation().x() << " "
-                  << iSAMCurrentEstimate.at<gtsam::Pose3>(iSAMCurrentEstimate.size() - 1).translation().y() << " "
-                  << iSAMCurrentEstimate.at<gtsam::Pose3>(iSAMCurrentEstimate.size() - 1).translation().z() << " "
-                  << std::endl;
-        std::cout << "========================================" << std::endl;
+//        std::cout << "========================================" << std::endl;
+//        std::cout << "Before rot = " << his_info.rot.w() << " "
+//                  << his_info.rot.x() << " "
+//                  << his_info.rot.y() << " "
+//                  << his_info.rot.z() << " "
+//                  << "Before pos = "
+//                  << his_info.pos.x() << " "
+//                  << his_info.pos.y() << " "
+//                  << his_info.pos.z() << " " << std::endl;
+//
+//
+//        std::cout << "After rot = "
+//                  << iSAMCurrentEstimate.at<gtsam::Pose3>(iSAMCurrentEstimate.size() - 1).rotation().toQuaternion().w() << " "
+//                  << iSAMCurrentEstimate.at<gtsam::Pose3>(iSAMCurrentEstimate.size() - 1).rotation().toQuaternion().x() << " "
+//                  << iSAMCurrentEstimate.at<gtsam::Pose3>(iSAMCurrentEstimate.size() - 1).rotation().toQuaternion().y() << " "
+//                  << iSAMCurrentEstimate.at<gtsam::Pose3>(iSAMCurrentEstimate.size() - 1).rotation().toQuaternion().z() << " "
+//                  << "After pos = "
+//                  << iSAMCurrentEstimate.at<gtsam::Pose3>(iSAMCurrentEstimate.size() - 1).translation().x() << " "
+//                  << iSAMCurrentEstimate.at<gtsam::Pose3>(iSAMCurrentEstimate.size() - 1).translation().y() << " "
+//                  << iSAMCurrentEstimate.at<gtsam::Pose3>(iSAMCurrentEstimate.size() - 1).translation().z() << " "
+//                  << std::endl;
+//        std::cout << "========================================" << std::endl;
 
 
 
         this->correctPoses();
+        auto loop_copy = this->isLoop;
+        auto iSAMCurrentEstimate_copy  = this->iSAMCurrentEstimate;
+        std::unique_lock<decltype(this->update_map_info_mutex)> lock_update_map(this->update_map_info_mutex);
+        this->update_map_info.push(std::make_pair(loop_copy, iSAMCurrentEstimate_copy));
+        lock_update_map.unlock();
 
-        this->updateMap();
     }
     else
     {
@@ -3452,8 +3427,11 @@ void dlio::OdomNode::saveFirstKeyframeAndUpdateFactor()
 
 
     this->correctPoses();
-
-    this->updateMap();
+    auto loop_copy = this->isLoop;
+    auto iSAMCurrentEstimate_copy  = this->iSAMCurrentEstimate;
+    std::unique_lock<decltype(this->update_map_info_mutex)> lock_update_map(this->update_map_info_mutex);
+    this->update_map_info.push(std::make_pair(loop_copy, iSAMCurrentEstimate_copy));
+    lock_update_map.unlock();
 
 
 }

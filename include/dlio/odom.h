@@ -40,6 +40,16 @@ private:
   bool isLoop;
   std::vector<std::pair<int, int>> history_loop_id;
   pcl::PointCloud<PointType>::Ptr global_map;
+
+  std::mutex global_map_update_mutex;
+  std::condition_variable global_map_update_cv;
+  bool global_map_update_finish = true;
+  pcl::VoxelGrid<PointType> voxel_global;
+
+
+  std::mutex update_map_info_mutex;
+  std::queue<std::pair<bool, gtsam::Values>> update_map_info;
+
   struct State;
   struct ImuMeas;
 
