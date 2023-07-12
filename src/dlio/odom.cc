@@ -2819,6 +2819,10 @@ void dlio::OdomNode::performLoop()
     icp.setEuclideanFitnessEpsilon(1e-6);
     icp.setRANSACIterations(0);
 
+    pcl::VoxelGrid<PointType> voxel_loop;
+    voxel_loop.setLeafSize(this->vf_res_, this->vf_res_, this->vf_res_);
+
+
 
     while(this->nh.ok())
     {
@@ -2872,6 +2876,9 @@ void dlio::OdomNode::performLoop()
                 pcl::transformPointCloud(*his_lidar[current_loop_kf_info.submap_kf_idx[i]], *temp_cloud, tempT.matrix());
                 *loop_candidate_map += *temp_cloud;
             }
+
+            voxel_loop.setInputCloud(loop_candidate_map);
+            voxel_loop.filter(*loop_candidate_map);
 
             icp.setInputSource(current_cloud);
             icp.setInputTarget(loop_candidate_map);
@@ -3318,6 +3325,8 @@ void dlio::OdomNode::saveKeyframeAndUpdateFactor()
 
     if (this->isKeyframe())
     {
+        std::chrono::steady_clock::time_point t1 = std::chrono::steady_clock::now();
+
         this->updateCurrentInfo();
 
         // 添加里程计因子
@@ -3342,6 +3351,7 @@ void dlio::OdomNode::saveKeyframeAndUpdateFactor()
         this->gtSAMgraph.resize(0);
         this->initialEstimate.clear();
         this->iSAMCurrentEstimate = this->isam->calculateEstimate();
+
 
         std::unique_lock<decltype(this->tempKeyframe_mutex)> lock_temp(this->tempKeyframe_mutex);
         KeyframeInfo his_info = this->tempKeyframe;
@@ -3372,6 +3382,11 @@ void dlio::OdomNode::saveKeyframeAndUpdateFactor()
 
 
         this->correctPoses();
+
+        std::chrono::steady_clock::time_point t2 = std::chrono::steady_clock::now();
+        double time = std::chrono::duration_cast<std::chrono::duration<double> >(t2 - t1).count();
+        std::cout << "Back end cost " << time * 1000 << " ms" << std::endl;
+
         auto loop_copy = this->isLoop;
         auto iSAMCurrentEstimate_copy  = this->iSAMCurrentEstimate;
         std::unique_lock<decltype(this->update_map_info_mutex)> lock_update_map(this->update_map_info_mutex);

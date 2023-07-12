@@ -13,7 +13,7 @@
 dlio:
   version: 1.1.0
   
-  adaptive: true
+  adaptive: false
 
   pointcloud:
     deskew: true

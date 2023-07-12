@@ -42,18 +42,18 @@ dlio:
       cropBoxFilter:
         size: 1.0
       voxelFilter:
-        res: 0.25
+        res: 0.5
 
     keyframe:
-      threshD: 0.25
-      threshR: 10.0
+      threshD: 2
+      threshR: 45.0
 
     submap:
       useJaccard: true
       keyframe:
-        knn: 10
-        kcv: 10
-        kcc: 10
+        knn: 20
+        kcv: 20
+        kcc: 20
     gicp:
       minNumPoints: 64
       kCorrespondences: 16
