@@ -22,7 +22,7 @@ dlio::OdomNode::OdomNode(ros::NodeHandle node_handle) : nh(node_handle) {
   params.relinearizeSkip = 1;
   this->isam = new gtsam::ISAM2(params);
 
-
+  this->keyframe_pose_corr = Eigen::Isometry3f::Identity();
 
 
   // 获取rosparam
@@ -119,11 +119,22 @@ dlio::OdomNode::OdomNode(ros::NodeHandle node_handle) : nh(node_handle) {
   this->gicp_temp.setRotationEpsilon(this->gicp_rotation_ep_);
   this->gicp_temp.setInitialLambdaFactor(this->gicp_init_lambda_factor_);
 
+
+  this->gicp_tool.setCorrespondenceRandomness(this->gicp_k_correspondences_);
+  this->gicp_tool.setMaxCorrespondenceDistance(this->gicp_max_corr_dist_);
+  this->gicp_tool.setMaximumIterations(this->gicp_max_iter_);
+  this->gicp_tool.setTransformationEpsilon(this->gicp_transformation_ep_);
+  this->gicp_tool.setRotationEpsilon(this->gicp_rotation_ep_);
+  this->gicp_tool.setInitialLambdaFactor(this->gicp_init_lambda_factor_);
+
   pcl::Registration<PointType, PointType>::KdTreeReciprocalPtr temp;
   this->gicp.setSearchMethodSource(temp, true);
   this->gicp.setSearchMethodTarget(temp, true);
   this->gicp_temp.setSearchMethodSource(temp, true);
   this->gicp_temp.setSearchMethodTarget(temp, true);
+
+  this->gicp_tool.setSearchMethodSource(temp, true);
+  this->gicp_tool.setSearchMethodTarget(temp, true);
 
   this->geo.first_opt_done = false;
   this->geo.prev_vel = Eigen::Vector3f(0., 0., 0.);
@@ -807,6 +818,8 @@ void dlio::OdomNode::initializeInputTarget() {
   this->keyframe_transformations.push_back(this->T_corr);
   this->keyframe_transformations_prior.push_back(this->T_prior);
 
+  this->keyframe_stateT.push_back(this->T);
+
 
   std::unique_lock<decltype(this->history_kf_lidar_mutex)> lock_his_lidar(this->history_kf_lidar_mutex);
   pcl::PointCloud<PointType>::Ptr temp(new pcl::PointCloud<PointType>);
@@ -814,9 +827,9 @@ void dlio::OdomNode::initializeInputTarget() {
   this->history_kf_lidar.push_back(temp);
   lock_his_lidar.unlock();
 
-
-  this->tempKeyframe.pos = this->state.p;
-  this->tempKeyframe.rot = this->state.q;
+  this->currentFusionState = this->state;
+  this->tempKeyframe.pos = this->currentFusionState.p;
+  this->tempKeyframe.rot = this->currentFusionState.q;
   this->tempKeyframe.vSim = {1};
   this->tempKeyframe.submap_kf_idx = {0};
   pcl::copyPointCloud(*this->current_scan, *this->tempKeyframe.pCloud);
@@ -1161,6 +1174,8 @@ void dlio::OdomNode::getNextPose() {
   // Update next global pose
   // Both source and target clouds are in the global frame now, so tranformation is global
   this->propagateGICP();
+
+
 
   // Geometric observer update
   this->updateState();
@@ -1516,6 +1531,11 @@ void dlio::OdomNode::updateState() {
   this->geo.prev_p = this->state.p;
   this->geo.prev_q = this->state.q;
   this->geo.prev_vel = this->state.v.lin.w;
+
+  this->currentFusionState = this->state;
+  this->currentFusionT = Eigen::Isometry3f::Identity();
+  this->currentFusionT.translate(this->currentFusionState.p);
+  this->currentFusionT.rotate(this->currentFusionState.q);
 
 }
 
@@ -2207,16 +2227,30 @@ void dlio::OdomNode::buildSubmapViaJaccard(dlio::OdomNode::State vehicle_state)
         pcl::PointCloud<PointType>::Ptr submap_cloud_(new pcl::PointCloud<PointType>());
         std::shared_ptr<nano_gicp::CovarianceList> submap_normals_ (std::make_shared<nano_gicp::CovarianceList>());;
 
+        std::unique_lock<decltype(this->history_kf_lidar_mutex)> lock_his(this->history_kf_lidar_mutex);
+        auto his = this->history_kf_lidar;
+        lock_his.unlock();
+
         for (auto k : this->submap_kf_idx_curr)
         {
+            pcl::PointCloud<PointType>::Ptr temp_cloud(new pcl::PointCloud<PointType>);
+
             lock.lock();
-            *submap_cloud_ += *this->keyframes[k].second;
+
+            Eigen::Isometry3f temp_T = Eigen::Isometry3f::Identity();
+            temp_T.translate(this->keyframes[k].first.first);
+            temp_T.rotate(this->keyframes[k].first.second);
+            pcl::transformPointCloud(*his[k], *temp_cloud, temp_T.matrix());
+            *submap_cloud_ += *temp_cloud;
+//            *submap_cloud_ += *this->keyframes[k].second;
             lock.unlock();
 
-            submap_normals_->insert(std::end(*submap_normals_), std::begin(*(this->keyframe_normals[k])),
-                                    std::end(*(this->keyframe_normals[k])));
-        }
+            this->gicp_tool.setInputSource(temp_cloud);
+            this->gicp_tool.calculateSourceCovariances();
 
+            submap_normals_->insert(std::end(*submap_normals_), std::begin(*(this->gicp_tool.getSourceCovariances())),
+                                    std::end(*(this->gicp_tool.getSourceCovariances())));
+        }
         this->submap_cloud = submap_cloud_;
         this->submap_normals = submap_normals_;
 
@@ -3195,12 +3229,12 @@ void dlio::OdomNode::correctPoses()
     this->global_pose.header.stamp = ros::Time::now();
     this->global_pose.header.frame_id = this->odom_frame;
     this->global_pose_pub.publish(this->global_pose);
-
     this->lidarPose.p = this->iSAMCurrentEstimate.at<gtsam::Pose3>(this->iSAMCurrentEstimate.size() - 1).translation().cast<float>();
     this->lidarPose.q = this->iSAMCurrentEstimate.at<gtsam::Pose3>(this->iSAMCurrentEstimate.size() - 1).rotation().toQuaternion().cast<float>();
 //    this->state.p = this->iSAMCurrentEstimate.at<gtsam::Pose3>(this->iSAMCurrentEstimate.size() - 1).translation().cast<float>();
 //    this->state.q = this->iSAMCurrentEstimate.at<gtsam::Pose3>(this->iSAMCurrentEstimate.size() - 1).rotation().toQuaternion().cast<float>();
     this->updateState();
+
 }
 
 void dlio::OdomNode::updateMap()
@@ -3288,7 +3322,7 @@ void dlio::OdomNode::updateCurrentInfo()
 {
     // 更新关键帧信息
     std::unique_lock<decltype(this->keyframes_mutex)> lock(this->keyframes_mutex);
-    this->keyframes.push_back(std::make_pair(std::make_pair(this->state.p, this->state.q), this->current_scan));
+    this->keyframes.push_back(std::make_pair(std::make_pair(this->currentFusionState.p, this->currentFusionState.q), this->current_scan));
     this->keyframe_timestamps.push_back(this->scan_header_stamp);
     this->keyframe_normals.push_back(this->gicp.getSourceCovariances());
     this->keyframe_transformations.push_back(this->T_corr);
@@ -3297,9 +3331,10 @@ void dlio::OdomNode::updateCurrentInfo()
 
     std::unique_lock<decltype(this->tempKeyframe_mutex)> lock_temp(this->tempKeyframe_mutex);
     pcl::copyPointCloud(*this->current_scan_lidar, *this->tempKeyframe.pCloud);
-    this->tempKeyframe.rot = this->state.q;
-    this->tempKeyframe.pos = this->state.p;
+    this->tempKeyframe.rot = this->currentFusionState.q;
+    this->tempKeyframe.pos = this->currentFusionState.p;
     this->KeyframesInfo.push_back(this->tempKeyframe);
+    this->keyframe_stateT.push_back(this->currentFusionT.matrix());
     lock_temp.unlock();
 
     pcl::PointCloud<PointType>::Ptr temp(new pcl::PointCloud<PointType>);

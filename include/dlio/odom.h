@@ -35,6 +35,7 @@ public:
 private:
 
   //
+  Eigen::Isometry3f keyframe_pose_corr;
   visualization_msgs::Marker loop_marker;
   bool kf_update;
   bool isLoop;
@@ -50,8 +51,12 @@ private:
   std::mutex update_map_info_mutex;
   std::queue<std::pair<bool, gtsam::Values>> update_map_info;
 
+  std::vector<Eigen::Matrix4f> keyframe_stateT;
+
   struct State;
   struct ImuMeas;
+
+
 
   void getParams();
 
@@ -299,6 +304,7 @@ private:
   // GICP
   nano_gicp::NanoGICP<PointType, PointType> gicp;
   nano_gicp::NanoGICP<PointType, PointType> gicp_temp;
+  nano_gicp::NanoGICP<PointType, PointType> gicp_tool;
 
   // Transformations
   Eigen::Matrix4f T, T_prior, T_corr;
@@ -371,6 +377,10 @@ private:
     Velocity v;
     ImuBias b; // imu biases in body frame
   }; State state;
+
+  State currentFusionState;
+  Eigen::Isometry3f currentFusionT;
+
 
   struct Pose {
     Eigen::Vector3f p; // position in world frame

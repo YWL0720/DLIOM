@@ -28,7 +28,7 @@ dlio:
 
   odom:
 
-    gravity: 9.80665
+    gravity: 0.098
 
     imu:
       approximateGravity: false
