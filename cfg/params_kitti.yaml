@@ -19,7 +19,7 @@ dlio:
     imu: imu
 
   map:
-    waitUntilMove: true
+    waitUntilMove: false
     dense:
       filtered: false
     sparse:
@@ -42,7 +42,7 @@ dlio:
       cropBoxFilter:
         size: 1.0
       voxelFilter:
-        res: 0.25
+        res: 0.8
 
     keyframe:
       threshD: 1.0

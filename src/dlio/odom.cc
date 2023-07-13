@@ -2143,10 +2143,9 @@ void dlio::OdomNode::buildSubmapViaJaccard(dlio::OdomNode::State vehicle_state)
             {
                 lock.lock();
                 float d = sqrt(pow(vehicle_state.p[0] - this->keyframes[this->submap_kf_idx_curr[i]].first.first[0], 2) +
-                               pow(vehicle_state.p[1] - this->keyframes[this->submap_kf_idx_curr[i]].first.first[1], 2) +
-                               pow(vehicle_state.p[2] - this->keyframes[this->submap_kf_idx_curr[i]].first.first[2], 2));
+                               pow(vehicle_state.p[1] - this->keyframes[this->submap_kf_idx_curr[i]].first.first[1], 2));
                 lock.unlock();
-                if (d < 15)
+                if (d < 10)
                 {
                     std::cout << "**************Build map find loop ************" << std::endl;
                     std::unique_lock<decltype(this->loop_info_mutex)> lock_loop(this->loop_info_mutex);
@@ -2923,6 +2922,9 @@ void dlio::OdomNode::performLoop()
             if (icp.hasConverged() == false)
             {
                 std::cout << "Perform loop find icp not converged" << std::endl;
+                lock_loop.lock();
+                this->curr_loop_info.reset();
+                lock_loop.unlock();
                 continue;
             }
 
