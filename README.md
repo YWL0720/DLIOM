@@ -7,20 +7,20 @@
 **代码功能正在持续完善中，当前仍然存在较多bug，仍在努力测试修改**
 
 <p align="center">
-  <img src="doc/img/fig1.png" height="400"/>
-  <img src="doc/img/fig2.png" height="400"/>
+  <img src="doc/img/fig1.png" height="300"/>
+  <img src="doc/img/fig2.png" height="300"/>
   <br>
   <em>图1 : UrbanLoco dataset Dataset 5: HK-Data20190117测试效果</em>
 </p>
 
 <p align="center">
-  <img src="doc/img/fig3.png" height="400"/>
+  <img src="doc/img/fig3.png" width="600"/>
   <br>
   <em>图2: 闭环前后的轨迹对比</em>
 </p>
 
 <p align="center">
-  <img src="doc/img/fig4.png" height="400"/>
+  <img src="doc/img/fig4.png" width="600"/>
   <br>
   <em>图3: 基于3D Jaccard的submap构建</em>
 </p>
