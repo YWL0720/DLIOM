@@ -24,6 +24,10 @@ dlio::OdomNode::OdomNode(ros::NodeHandle node_handle) : nh(node_handle) {
 
   this->keyframe_pose_corr = Eigen::Isometry3f::Identity();
 
+  this->f.open("trajectory.txt", std::ios::out);
+  this->f.precision(9);
+  this->f.setf(std::ios::fixed);
+
 
   // 获取rosparam
   this->getParams();
@@ -2836,8 +2840,7 @@ void dlio::OdomNode::mapping()
 gtsam::Pose3 dlio::OdomNode::state2Pose3(Eigen::Quaternionf rot, Eigen::Vector3f pos)
 {
     rot.normalize();
-    Eigen::Vector3f xyz = rot.toRotationMatrix().eulerAngles(0, 1, 2);
-    return gtsam::Pose3(gtsam::Rot3::RzRyRx(xyz[0], xyz[1], xyz[2]), gtsam::Point3(pos[0], pos[1], pos[2]));
+    return gtsam::Pose3(gtsam::Rot3(rot.cast<double>()), gtsam::Point3(pos.cast<double>()));
 }
 
 void dlio::OdomNode::performLoop()
@@ -3097,6 +3100,7 @@ void dlio::OdomNode::addOdomFactor()
             std::unique_lock<decltype(this->keyframes_mutex)> lock_kf(this->keyframes_mutex);
             gtsam::Pose3 poseFrom = state2Pose3(this->keyframes[curr_submap_id[i]].first.second,
                                                 this->keyframes[curr_submap_id[i]].first.first);
+            lock_kf.unlock();
             // 噪声权重
             double weight = 1.0;
 
@@ -3115,9 +3119,17 @@ void dlio::OdomNode::addOdomFactor()
             gtsam::noiseModel::Diagonal::shared_ptr odometryNoise = gtsam::noiseModel::Diagonal::Variances(
                     (gtsam::Vector(6) << 1e-6, 1e-6, 1e-6, 1e-4, 1e-4, 1e-4).finished() * weight);
             this->gtSAMgraph.emplace_shared<gtsam::BetweenFactor<gtsam::Pose3>>(curr_submap_id[i],
-                                                                          num_factor,
-                                                                          poseFrom.between(poseTo), odometryNoise);
+                                                                          num_factor,poseFrom.between(poseTo), odometryNoise);
         }
+//        std::unique_lock<decltype(this->keyframes_mutex)> lock_kf(this->keyframes_mutex);
+//        gtsam::Pose3 poseFrom = state2Pose3(this->keyframes[num_factor - 1].first.second,
+//                                            this->keyframes[num_factor - 1].first.first);
+//        lock_kf.unlock();
+//        gtsam::noiseModel::Diagonal::shared_ptr odometryNoise = gtsam::noiseModel::Diagonal::Variances(
+//                (gtsam::Vector(6) << 1e-6, 1e-6, 1e-6, 1e-4, 1e-4, 1e-4).finished());
+//        this->gtSAMgraph.emplace_shared<gtsam::BetweenFactor<gtsam::Pose3>>(num_factor - 1,
+//                                                                            num_factor,poseFrom.between(poseTo), odometryNoise);
+
         this->initialEstimate.insert(num_factor, poseTo);
     }
     num_factor++;
@@ -3212,7 +3224,22 @@ void dlio::OdomNode::correctPoses()
             p.orientation.z = this->iSAMCurrentEstimate.at<gtsam::Pose3>(i).rotation().toQuaternion().z();
             this->global_pose.poses.push_back(p);
         }
+
+        for (int i = 0; i < this->global_pose.poses.size(); i++)
+        {
+            geometry_msgs::Point position = this->global_pose.poses[i].position;
+            geometry_msgs::Quaternion orientation = this->global_pose.poses[i].orientation;
+            double time = this->keyframe_timestamps[i].toSec();
+            this->f << time << " " << position.x << " " << position.y << " " << position.z << " " << orientation.x <<
+              " " << orientation.y << " " << orientation.z << " " << orientation.w << std::endl;
+        }
+        this->f.close();
+        ROS_INFO("Finished trajectory");
+
         lock_kf.unlock();
+
+
+
     }
     else
     {

@@ -35,6 +35,7 @@ public:
 private:
 
   //
+  std::fstream f;
   Eigen::Isometry3f keyframe_pose_corr;
   visualization_msgs::Marker loop_marker;
   bool kf_update;

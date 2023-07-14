@@ -16,6 +16,8 @@ project(direct_lidar_inertial_odometry)
 add_compile_options(-std=c++14)
 set(CMAKE_BUILD_TYPE "Release")
 
+#add_definitions(-DGTSAM_USE_QUATERNIONS)
+
 find_package( PCL REQUIRED )
 include_directories(${PCL_INCLUDE_DIRS})
 add_definitions(${PCL_DEFINITIONS})
