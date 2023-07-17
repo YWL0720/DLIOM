@@ -24,9 +24,7 @@ dlio::OdomNode::OdomNode(ros::NodeHandle node_handle) : nh(node_handle) {
 
   this->keyframe_pose_corr = Eigen::Isometry3f::Identity();
 
-  this->f.open("trajectory.txt", std::ios::out);
-  this->f.precision(9);
-  this->f.setf(std::ios::fixed);
+
 
 
   // 获取rosparam
@@ -3224,6 +3222,9 @@ void dlio::OdomNode::correctPoses()
             p.orientation.z = this->iSAMCurrentEstimate.at<gtsam::Pose3>(i).rotation().toQuaternion().z();
             this->global_pose.poses.push_back(p);
         }
+        this->f.open("/home/ywl/trajectory.txt", std::ios::out);
+        this->f.precision(9);
+        this->f.setf(std::ios::fixed);
 
         for (int i = 0; i < this->global_pose.poses.size(); i++)
         {
@@ -3449,7 +3450,7 @@ void dlio::OdomNode::saveKeyframeAndUpdateFactor()
 
         std::chrono::steady_clock::time_point t2 = std::chrono::steady_clock::now();
         double time = std::chrono::duration_cast<std::chrono::duration<double> >(t2 - t1).count();
-        std::cout << "Back end cost " << time * 1000 << " ms" << std::endl;
+//        std::cout << "Back end cost " << time * 1000 << " ms" << std::endl;
 
         auto loop_copy = this->isLoop;
         auto iSAMCurrentEstimate_copy  = this->iSAMCurrentEstimate;
