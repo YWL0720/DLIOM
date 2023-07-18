@@ -28,10 +28,11 @@ dlio:
 
   odom:
 
-    gravity: 9.8
+    gravity: 9.8015
+   
 
     imu:
-      approximateGravity: false
+      approximateGravity: true
       calibration:
         gyro: true
         accel: true

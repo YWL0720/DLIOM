@@ -31,7 +31,7 @@ dlio:
     gravity: 9.80665
 
     imu:
-      approximateGravity: false
+      approximateGravity: true
       calibration:
         gyro: true
         accel: true
@@ -42,18 +42,18 @@ dlio:
       cropBoxFilter:
         size: 1.0
       voxelFilter:
-        res: 0.8
+        res: 0.5
 
     keyframe:
       threshD: 1.0
-      threshR: 45.0
+      threshR: 20.0
 
     submap:
       useJaccard: true
       keyframe:
-        knn: 10
-        kcv: 10
-        kcc: 10
+        knn: 15
+        kcv: 15
+        kcc: 15
     gicp:
       minNumPoints: 64
       kCorrespondences: 16

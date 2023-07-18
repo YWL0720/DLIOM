@@ -112,6 +112,8 @@ add_dependencies(dlio_odom_node ${catkin_EXPORTED_TARGETS} ${PROJECT_NAME}_gener
 target_compile_options(dlio_odom_node PRIVATE ${OpenMP_FLAGS})
 target_link_libraries(dlio_odom_node ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${OpenMP_LIBS} Threads::Threads nano_gicp gtsam)
 
+#message(${OpenMP_LIBS})
+
 # Mapping Node
 add_executable (dlio_map_node src/dlio/map_node.cc src/dlio/map.cc)
 add_dependencies(dlio_map_node ${catkin_EXPORTED_TARGETS} ${PROJECT_NAME}_generate_messages_cpp)

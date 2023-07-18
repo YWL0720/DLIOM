@@ -35,6 +35,7 @@ public:
 private:
 
   //
+  float icpScore;
   std::fstream f;
   Eigen::Isometry3f keyframe_pose_corr;
   visualization_msgs::Marker loop_marker;

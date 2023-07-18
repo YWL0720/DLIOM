@@ -23,6 +23,7 @@ dlio::OdomNode::OdomNode(ros::NodeHandle node_handle) : nh(node_handle) {
   this->isam = new gtsam::ISAM2(params);
 
   this->keyframe_pose_corr = Eigen::Isometry3f::Identity();
+  this->icpScore = 1.0;
 
 
 
@@ -129,14 +130,14 @@ dlio::OdomNode::OdomNode(ros::NodeHandle node_handle) : nh(node_handle) {
   this->gicp_tool.setRotationEpsilon(this->gicp_rotation_ep_);
   this->gicp_tool.setInitialLambdaFactor(this->gicp_init_lambda_factor_);
 
-  pcl::Registration<PointType, PointType>::KdTreeReciprocalPtr temp;
-  this->gicp.setSearchMethodSource(temp, true);
-  this->gicp.setSearchMethodTarget(temp, true);
-  this->gicp_temp.setSearchMethodSource(temp, true);
-  this->gicp_temp.setSearchMethodTarget(temp, true);
-
-  this->gicp_tool.setSearchMethodSource(temp, true);
-  this->gicp_tool.setSearchMethodTarget(temp, true);
+//  pcl::Registration<PointType, PointType>::KdTreeReciprocalPtr temp;
+//  this->gicp.setSearchMethodSource(temp, true);
+//  this->gicp.setSearchMethodTarget(temp, true);
+//  this->gicp_temp.setSearchMethodSource(temp, true);
+//  this->gicp_temp.setSearchMethodTarget(temp, true);
+//
+//  this->gicp_tool.setSearchMethodSource(temp, true);
+//  this->gicp_tool.setSearchMethodTarget(temp, true);
 
   this->geo.first_opt_done = false;
   this->geo.prev_vel = Eigen::Vector3f(0., 0., 0.);
@@ -1150,11 +1151,11 @@ void dlio::OdomNode::getNextPose() {
 
     // Set the current global submap as the target cloud
     // 输入submap点云作为target
-    this->gicp.registerInputTarget(this->submap_cloud);
-
+//    this->gicp.registerInputTarget(this->submap_cloud);
+    this->gicp.setInputTarget(this->submap_cloud);
     // Set submap kdtree
     // 设置submao kdtree为target kdtree
-    this->gicp.target_kdtree_ = this->submap_kdtree;
+//    this->gicp.target_kdtree_ = this->submap_kdtree;
 
     // Set target cloud's normals as submap normals
     this->gicp.setTargetCovariances(this->submap_normals);
@@ -1166,11 +1167,14 @@ void dlio::OdomNode::getNextPose() {
   // 进行对齐
   pcl::PointCloud<PointType>::Ptr aligned (boost::make_shared<pcl::PointCloud<PointType>>());
   this->gicp.align(*aligned);
+  this->icpScore = float(this->gicp.getFitnessScore());
 
   // Get final transformation in global frame
   // 得到先验状态修正值
   this->T_corr = this->gicp.getFinalTransformation(); // "correction" transformation
-  // 对先验状态进行修正
+
+
+    // 对先验状态进行修正
   this->T = this->T_corr * this->T_prior;
 
   // Update next global pose
@@ -2938,6 +2942,7 @@ void dlio::OdomNode::performLoop()
             // 优化后的当前关键帧位姿
             auto T_after = T_c * T_before;
             float score = icp.getFitnessScore();
+
             std::cout << "=========================" << std::endl;
             std::cout << "After loop pos = " << T_after.translation() << std::endl;
 //            std::cout << "After loop rot = " << T_after.rotation() << std::endl;
@@ -2955,9 +2960,9 @@ void dlio::OdomNode::performLoop()
             this->curr_factor_info.T_current.translate(T_after.translation());
             this->curr_factor_info.T_current.rotate(T_after.rotation());
             this->curr_factor_info.T_target = T_candidate;
-            this->curr_factor_info.sim = current_loop_info.candidate_sim[max_id] * score;
             this->curr_factor_info.dis = current_loop_info.candidate_dis[max_id];
             this->curr_factor_info.factor_id = std::make_pair(current_loop_info.current_id, current_loop_info.candidate_key[max_id]);
+            this->curr_factor_info.sim = current_loop_info.candidate_sim[max_id] * score * (1.0 / (this->curr_factor_info.factor_id.first - this->curr_factor_info.factor_id.second));
             lock_factor.unlock();
 
             std::cout << "*************Finished loop icp*************" << std::endl;
@@ -3100,7 +3105,7 @@ void dlio::OdomNode::addOdomFactor()
                                                 this->keyframes[curr_submap_id[i]].first.first);
             lock_kf.unlock();
             // 噪声权重
-            double weight = 1.0;
+            double weight = 1.0 * this->icpScore;
 
             if (curr_sim.size() > 0)
             {
@@ -3172,6 +3177,7 @@ void dlio::OdomNode::addLoopFactor()
     {
         this->isLoop = true;
         std::cout << "Back end processing loop" << std::endl;
+
         gtsam::noiseModel::Diagonal::shared_ptr loopNoise = gtsam::noiseModel::Diagonal::Variances(
                 (gtsam::Vector(6) << 1e-8, 1e-8, 1e-8, 1e-6, 1e-6, 1e-6).finished() * current_loop_factor_info.sim);
 

@@ -28,7 +28,7 @@ dlio:
 
   odom:
 
-    gravity: 0.098
+    gravity: 0.0001
 
     imu:
       approximateGravity: false
@@ -45,8 +45,8 @@ dlio:
         res: 0.5
 
     keyframe:
-      threshD: 2
-      threshR: 45.0
+      threshD: 0.5
+      threshR: 10.0
 
     submap:
       useJaccard: true
