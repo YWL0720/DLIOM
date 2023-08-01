@@ -77,6 +77,7 @@ catkin_make
 - 7.14 添加了对newer college数据集的测试 增加了保存回环后关键帧位姿的接口
 - 7.17 增加了utbm接口
 - 7.18 修正了fitness的bug
+- 8.1 增加GeographicLib的GPS预处理接口
 
 ### TODO:
 - 重新制定submap构建时关键帧位姿的确定方式

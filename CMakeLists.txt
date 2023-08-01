@@ -53,6 +53,9 @@ find_package(catkin REQUIRED COMPONENTS
   message_generation
 )
 
+find_package (GeographicLib REQUIRED)
+include_directories (${GeographicLib_INCLUDE_DIRS})
+
 add_service_files(
   DIRECTORY srv
   FILES
@@ -110,7 +113,7 @@ target_link_libraries(nano_gicp ${PCL_LIBRARIES} ${OpenMP_LIBS} nanoflann)
 add_executable(dlio_odom_node src/dlio/odom_node.cc src/dlio/odom.cc)
 add_dependencies(dlio_odom_node ${catkin_EXPORTED_TARGETS} ${PROJECT_NAME}_generate_messages_cpp)
 target_compile_options(dlio_odom_node PRIVATE ${OpenMP_FLAGS})
-target_link_libraries(dlio_odom_node ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${OpenMP_LIBS} Threads::Threads nano_gicp gtsam)
+target_link_libraries(dlio_odom_node ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${OpenMP_LIBS} Threads::Threads nano_gicp gtsam ${GeographicLib_LIBRARIES})
 
 #message(${OpenMP_LIBS})
 

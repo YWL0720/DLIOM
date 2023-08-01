@@ -59,11 +59,16 @@ private:
   struct ImuMeas;
 
 
+  // GPS
+  double init_x;
+  double init_y;
+
 
   void getParams();
 
   void callbackPointCloud(const sensor_msgs::PointCloud2ConstPtr& pc);
   void callbackImu(const sensor_msgs::Imu::ConstPtr& imu);
+  void callbackGPS(const sensor_msgs::NavSatFixConstPtr& gps);
 
   void publishPose(const ros::TimerEvent& e);
 

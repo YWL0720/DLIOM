@@ -862,6 +862,28 @@ void dlio::OdomNode::initializeDLIO() {
 
 }
 
+void dlio::OdomNode::callbackGPS(const sensor_msgs::NavSatFixConstPtr &gps)
+{
+    GeographicLib::GeoCoords geoCoords(gps->latitude, gps->longitude);
+
+    auto get_xy = [&](double& x, double& y) {
+        stringstream ss(geoCoords.AltUTMUPSRepresentation(2));
+        vector<string> temp;
+        string temp_string;
+        while(ss >> temp_string)
+            temp.push_back(temp_string);
+
+        x = stod(temp[1]);
+        y = stod(temp[2]);
+    };
+
+    double x, y;
+    get_xy(x, y);
+
+}
+
+
+
 void dlio::OdomNode::callbackPointCloud(const sensor_msgs::PointCloud2ConstPtr& pc) {
   this->count++;
 //  std::cout << "==========================================" << std::endl;

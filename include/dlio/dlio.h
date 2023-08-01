@@ -54,6 +54,7 @@ std::string to_string_with_precision(const T a_value, const int n = 6)
 #include <sensor_msgs/PointCloud2.h>
 #include <tf2_ros/transform_broadcaster.h>
 #include <visualization_msgs/Marker.h>
+#include <sensor_msgs/NavSatFix.h>
 // BOOST
 #include <boost/format.hpp>
 #include <boost/circular_buffer.hpp>
@@ -94,6 +95,8 @@ std::string to_string_with_precision(const T a_value, const int n = 6)
 #include <gtsam/inference/Symbol.h>
 #include <gtsam/nonlinear/ISAM2.h>
 
+// GeographicLib
+#include <GeographicLib/GeoCoords.hpp>
 
 namespace dlio {
   enum class SensorType { OUSTER, VELODYNE, HESAI, UNKNOWN };
