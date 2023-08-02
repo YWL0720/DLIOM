@@ -943,7 +943,7 @@ void dlio::OdomNode::callbackGPS(const sensor_msgs::NavSatFixConstPtr &gps)
                 this->v_gps_init.push_back(this->gps_meas);
             }
 
-            if (this->v_gps_init.size() > 15 && gps_distance(this->v_gps_meas.front(), this->v_gps_meas.back()) > 10)
+            if (this->v_gps_init.size() > 50 && gps_distance(this->v_gps_meas.front(), this->v_gps_meas.back()) > 10)
             {
 
                 std::unique_lock<std::mutex> lock(this->gps_mutex);
@@ -1009,8 +1009,9 @@ void dlio::OdomNode::callbackGPS(const sensor_msgs::NavSatFixConstPtr &gps)
                 Eigen::JacobiSVD<Eigen::Matrix3d> svd(W, Eigen::ComputeFullU | Eigen::ComputeFullV);
                 Eigen::Matrix3d V = svd.matrixV();
                 Eigen::Matrix3d U = svd.matrixU();
-
-                this->R_M_G = U * V.transpose();
+                Eigen::Matrix3d E;
+                E << 1,0,0,0,1,0,0,0,(U * (V.transpose())).determinant();
+                this->R_M_G = U * E * V.transpose();
                 this->t_M_G = map_center - this->R_M_G * gps_center;
                 this->gps_init = true;
                 ROS_INFO("GPS init finish");
