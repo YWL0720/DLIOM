@@ -12,6 +12,8 @@ Panels:
         - /Global Map1
         - /Loop1
         - /PoseArray1
+        - /Odometry2
+        - /Odometry2/Status1
       Splitter Ratio: 0.6470588445663452
     Tree Height: 1385
   - Class: rviz/Selection
@@ -215,7 +217,7 @@ Visualization Manager:
           Axes Radius: 0.10000000149011612
           Class: rviz/PoseArray
           Color: 255; 25; 0
-          Enabled: true
+          Enabled: false
           Head Length: 0.07000000029802322
           Head Radius: 0.029999999329447746
           Name: Keyframes
@@ -225,7 +227,7 @@ Visualization Manager:
           Shape: Axes
           Topic: /robot/dlio/odom_node/keyframes
           Unreliable: false
-          Value: true
+          Value: false
         - Alpha: 1
           Buffer Length: 1
           Class: rviz/Path
@@ -293,7 +295,7 @@ Visualization Manager:
       Marker Topic: /robot/dlio_odom/loop_constraint
       Name: Loop
       Namespaces:
-        {}
+        loop: true
       Queue Size: 100
       Value: true
     - Alpha: 1
@@ -302,7 +304,7 @@ Visualization Manager:
       Axes Radius: 0.10000000149011612
       Class: rviz/PoseArray
       Color: 255; 25; 0
-      Enabled: true
+      Enabled: false
       Head Length: 0.07000000029802322
       Head Radius: 0.029999999329447746
       Name: PoseArray
@@ -311,6 +313,41 @@ Visualization Manager:
       Shaft Radius: 0.009999999776482582
       Shape: Axes
       Topic: /robot/dlio_odom/global_odom
+      Unreliable: false
+      Value: false
+    - Angle Tolerance: 0.10000000149011612
+      Class: rviz/Odometry
+      Covariance:
+        Orientation:
+          Alpha: 0.5
+          Color: 255; 255; 127
+          Color Style: Unique
+          Frame: Local
+          Offset: 1
+          Scale: 1
+          Value: true
+        Position:
+          Alpha: 0.30000001192092896
+          Color: 204; 51; 204
+          Scale: 1
+          Value: true
+        Value: true
+      Enabled: true
+      Keep: 100
+      Name: Odometry
+      Position Tolerance: 0.10000000149011612
+      Queue Size: 10
+      Shape:
+        Alpha: 1
+        Axes Length: 1
+        Axes Radius: 0.10000000149011612
+        Color: 255; 25; 0
+        Head Length: 0.30000001192092896
+        Head Radius: 0.10000000149011612
+        Shaft Length: 1
+        Shaft Radius: 0.05000000074505806
+        Value: Axes
+      Topic: /robot/dlio_odom/odom_gps
       Unreliable: false
       Value: true
   Enabled: true
@@ -341,7 +378,7 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz/Orbit
-      Distance: 84.11764526367188
+      Distance: 282.4232177734375
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
@@ -349,9 +386,9 @@ Visualization Manager:
         Value: false
       Field of View: 0.7853981852531433
       Focal Point:
-        X: -12.43335247039795
-        Y: 5.9987335205078125
-        Z: 19.87047004699707
+        X: 144.3823699951172
+        Y: -17.616811752319336
+        Z: -52.60624694824219
       Focal Shape Fixed Size: false
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
@@ -359,7 +396,7 @@ Visualization Manager:
       Near Clip Distance: 0.009999999776482582
       Pitch: 1.5697963237762451
       Target Frame: robot/base_link
-      Yaw: 1.5599569082260132
+      Yaw: 5.853132247924805
     Saved: ~
 Window Geometry:
   Displays:

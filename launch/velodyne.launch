@@ -17,6 +17,7 @@
 
   <arg name="pointcloud_topic" default="/velodyne_points_0"/>
   <arg name="imu_topic" default="/imu/data"/>
+  <arg name="gps_topic" default="/ublox_gps_node/fix"/>
 
   <!-- DLIO Odometry Node -->
   <node ns="$(arg robot_namespace)" name="dlio_odom" pkg="direct_lidar_inertial_odometry" type="dlio_odom_node" output="screen" clear_params="true">
@@ -28,6 +29,7 @@
     <!-- Subscriptions -->
     <remap from="~pointcloud" to="$(arg pointcloud_topic)"/>
     <remap from="~imu" to="$(arg imu_topic)"/>
+    <remap from="~gps" to="$(arg gps_topic)"/>
 
     <!-- Publications -->
     <remap from="~odom"     to="dlio/odom_node/odom"/>

@@ -47,6 +47,8 @@ dlio::OdomNode::OdomNode(ros::NodeHandle node_handle) : nh(node_handle) {
   this->imu_sub = this->nh.subscribe("imu", 1000,
       &dlio::OdomNode::callbackImu, this, ros::TransportHints().tcpNoDelay());
 
+  this->gps_sub = this->nh.subscribe<sensor_msgs::NavSatFix>("gps", 1000, &dlio::OdomNode::callbackGPS, this, ros::TransportHints().tcpNoDelay());
+
   this->odom_pub     = this->nh.advertise<nav_msgs::Odometry>("odom", 1, true);
   this->pose_pub     = this->nh.advertise<geometry_msgs::PoseStamped>("pose", 1, true);
   this->path_pub     = this->nh.advertise<nav_msgs::Path>("path", 1, true);
@@ -59,6 +61,8 @@ dlio::OdomNode::OdomNode(ros::NodeHandle node_handle) : nh(node_handle) {
   this->global_map_pub = this->nh.advertise<sensor_msgs::PointCloud2>("global_map", 100);
   this->publish_timer = this->nh.createTimer(ros::Duration(0.01), &dlio::OdomNode::publishPose, this);
   this->global_pose_pub = this->nh.advertise<geometry_msgs::PoseArray>("global_odom", 1, true);
+
+  this->gps_pub_test = this->nh.advertise<nav_msgs::Odometry>("odom_gps", 1000);
 
   this->T = Eigen::Matrix4f::Identity();
   this->T_prior = Eigen::Matrix4f::Identity();
@@ -866,6 +870,13 @@ void dlio::OdomNode::callbackGPS(const sensor_msgs::NavSatFixConstPtr &gps)
 {
     GeographicLib::GeoCoords geoCoords(gps->latitude, gps->longitude);
 
+    Eigen::Matrix3d gps_cov;
+    gps_cov << gps->position_covariance[0], gps->position_covariance[1], gps->position_covariance[2],
+               gps->position_covariance[3], gps->position_covariance[4], gps->position_covariance[5],
+               gps->position_covariance[6], gps->position_covariance[7], gps->position_covariance[8];
+
+
+
     auto get_xy = [&](double& x, double& y) {
         stringstream ss(geoCoords.AltUTMUPSRepresentation(2));
         vector<string> temp;
@@ -877,8 +888,142 @@ void dlio::OdomNode::callbackGPS(const sensor_msgs::NavSatFixConstPtr &gps)
         y = stod(temp[2]);
     };
 
-    double x, y;
+    double x, y, z;
     get_xy(x, y);
+    z = gps->altitude;
+
+    if (this->dlio_initialized)
+    {
+        static double initx = x;
+        static double inity = y;
+        static double initz = z;
+
+        Eigen::Vector3d gps_origin = {x - initx, y - inity, z - initz};
+        Eigen::Vector3d gps_map = this->R_M_G * gps_origin + this->t_M_G;
+
+        this->gps_meas.x = gps_map.x();
+        this->gps_meas.y = gps_map.y();
+        this->gps_meas.z = gps_map.z();
+        this->gps_meas.time = gps->header.stamp.toSec();
+
+        std::unique_lock<decltype(this->gps_mutex)> lock_gps(this->gps_mutex);
+        this->v_gps_meas.push_back(this->gps_meas);
+        lock_gps.unlock();
+
+        {
+            nav_msgs::Odometry odom;
+            odom.header.stamp = gps->header.stamp;
+            odom.header.frame_id = this->odom_frame;
+            odom.child_frame_id = this->baselink_frame;
+            odom.pose.pose.position.x = this->gps_meas.x;
+            odom.pose.pose.position.y = this->gps_meas.y;
+            odom.pose.pose.position.z = this->gps_meas.z;
+            this->gps_pub_test.publish(odom);
+            if (this->gps_init)
+            {
+                ROS_INFO("Get GPS coord in UTM frame x = %0.2f , y = %0.2f, z = %0.2f", x - initx, y - inity, z - initz);
+                ROS_INFO("Get GPS coord in MAP frame x = %0.2f , y = %0.2f, z = %0.2f", this->gps_meas.x, this->gps_meas.y, this->gps_meas.z);
+            }
+        }
+
+        auto gps_distance = [](GPSMeas meas1, GPSMeas meas2) {
+            return sqrt((meas1.x - meas2.x) * (meas1.x - meas2.x) +
+                        (meas1.y - meas2.y) * (meas1.y - meas2.y) +
+                        (meas1.z - meas2.z) * (meas1.z - meas2.z));
+        };
+
+        if (!this->gps_init)
+        {
+            if (gps_distance(this->last_gps_meas, this->gps_meas) < 0.5)
+            {
+                ROS_WARN("Vehicle do not move, GPS can't initialize");
+            }
+            else
+            {
+                this->v_gps_init.push_back(this->gps_meas);
+            }
+
+            if (this->v_gps_init.size() > 15 && gps_distance(this->v_gps_meas.front(), this->v_gps_meas.back()) > 10)
+            {
+
+                std::unique_lock<std::mutex> lock(this->gps_mutex);
+                auto gps_pos = this->v_gps_init;
+                auto map_pos = this->v_gps_state;
+                lock.unlock();
+
+                // 根据gps_pos的时间戳在body_pos中查找匹配点 并保存到v_match中
+                std::vector<GPSMeas> v_match;
+                std::unordered_set<int> matched_id;
+                std::vector<int> matched_id_order;
+                for (int i = 0; i < gps_pos.size(); i++)
+                {
+                    double time_diff = 1e5;
+                    int id = -1;
+                    for (int j = 0; j < map_pos.size(); j++)
+                    {
+                        double diff = abs(gps_pos[i].time - map_pos[j].time);
+                        if (diff < time_diff && matched_id.find(j) == matched_id.end())
+                        {
+                            time_diff = diff;
+                            id = j;
+                        }
+                    }
+                    v_match.push_back(map_pos[id]);
+                    matched_id.insert(id);
+                    matched_id_order.push_back(id);
+                }
+
+                // 过滤掉无效点 计算有效中心点
+                std::vector<GPSMeas> match_gps;
+                std::vector<GPSMeas> match_map;
+
+                Eigen::Vector3d gps_center = {0, 0, 0};
+                Eigen::Vector3d map_center = {0, 0, 0};
+
+                for (int i = 0; i < gps_pos.size(); i++)
+                {
+                    if (matched_id_order[i] != -1)
+                    {
+                        match_gps.push_back(gps_pos[i]);
+                        match_map.push_back(v_match[i]);
+                        gps_center += Eigen::Vector3d(gps_pos[i].x, gps_pos[i].y, gps_pos[i].z);
+                        map_center += Eigen::Vector3d(v_match[i].x, v_match[i].y, v_match[i].z);
+                    }
+                }
+
+                gps_center = gps_center / match_gps.size();
+                map_center = map_center / match_map.size();
+
+                Eigen::Matrix3d W = Eigen::Matrix3d::Zero();
+
+                for (int i = 0; i < match_gps.size(); i++)
+                {
+                    Eigen::Vector3d gps_point = {match_gps[i].x, match_gps[i].y, match_gps[i].z};
+                    gps_point -= gps_center;
+                    Eigen::Vector3d map_point = {match_map[i].x, match_map[i].y, match_map[i].z};
+                    map_point -= map_center;
+
+                    W += map_point * gps_point.transpose();
+                }
+
+                Eigen::JacobiSVD<Eigen::Matrix3d> svd(W, Eigen::ComputeFullU | Eigen::ComputeFullV);
+                Eigen::Matrix3d V = svd.matrixV();
+                Eigen::Matrix3d U = svd.matrixU();
+
+                this->R_M_G = U * V.transpose();
+                this->t_M_G = map_center - this->R_M_G * gps_center;
+                this->gps_init = true;
+                ROS_INFO("GPS init finish");
+                ROS_INFO("R_M_G = \n %0.2f, %0.2f, %0.2f \n %0.2f, %0.2f, %0.2f \n %0.2f, %0.2f, %0.2f",
+                         this->R_M_G(0, 0), this->R_M_G(0, 1), this->R_M_G(0, 2),
+                         this->R_M_G(1, 0), this->R_M_G(1, 1), this->R_M_G(1, 2),
+                         this->R_M_G(2, 0), this->R_M_G(2, 1), this->R_M_G(2, 2));
+            }
+        }
+
+    }
+    else
+        return;
 
 }
 
@@ -1559,6 +1704,12 @@ void dlio::OdomNode::updateState() {
   this->geo.prev_p = this->state.p;
   this->geo.prev_q = this->state.q;
   this->geo.prev_vel = this->state.v.lin.w;
+
+  if (!this->gps_init)
+  {
+      std::lock_guard<std::mutex> lock(this->gps_mutex);
+      this->v_gps_state.push_back(GPSMeas(this->state.p.x(), this->state.p.y(), this->state.p.z(), this->imu_stamp.toSec()));
+  }
 
   this->currentFusionState = this->state;
   this->currentFusionT = Eigen::Isometry3f::Identity();
@@ -3158,6 +3309,11 @@ void dlio::OdomNode::addOdomFactor()
         this->initialEstimate.insert(num_factor, poseTo);
     }
     num_factor++;
+
+}
+
+void dlio::OdomNode::addGPSFactor()
+{
 
 }
 

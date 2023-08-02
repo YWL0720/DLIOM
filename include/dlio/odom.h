@@ -27,6 +27,7 @@ public:
   bool isKeyframe();
   void addOdomFactor();
   void addLoopFactor();
+  void addGPSFactor();
   void loopVisual();
   void correctPoses();
   void updateMap();
@@ -60,9 +61,28 @@ private:
 
 
   // GPS
-  double init_x;
-  double init_y;
+  Eigen::Matrix3d R_M_G = Eigen::Matrix3d::Identity();
+  Eigen::Vector3d t_M_G = Eigen::Vector3d::Zero();
 
+  struct GPSMeas
+  {
+      GPSMeas() {};
+      GPSMeas(double x_, double y_, double z_, double time_) : x(x_), y(y_), z(z_), time(time_) {};
+      double x;
+      double y;
+      double z;
+      double time;
+      Eigen::Matrix3d cov;
+  };
+
+  std::vector<GPSMeas> v_gps_meas;
+  std::vector<GPSMeas> v_gps_init;
+  std::vector<GPSMeas> v_gps_state;
+
+  std::mutex gps_mutex;
+  GPSMeas gps_meas;
+  GPSMeas last_gps_meas;
+  bool gps_init = false;
 
   void getParams();
 
@@ -136,6 +156,7 @@ private:
   // Subscribers
   ros::Subscriber lidar_sub;
   ros::Subscriber imu_sub;
+  ros::Subscriber gps_sub;
 
   // Publishers
   ros::Publisher odom_pub;
@@ -148,6 +169,8 @@ private:
   ros::Publisher global_map_pub;
   ros::Publisher global_pose_pub;
   ros::Publisher loop_constraint_pub;
+
+  ros::Publisher gps_pub_test;
 
   // ROS Msgs
   nav_msgs::Odometry odom_ros;

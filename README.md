@@ -78,6 +78,7 @@ catkin_make
 - 7.17 增加了utbm接口
 - 7.18 修正了fitness的bug
 - 8.1 增加GeographicLib的GPS预处理接口
+- 8.2 完成GPS回调 UTM与Lidar系的初始化对齐 
 
 ### TODO:
 - 重新制定submap构建时关键帧位姿的确定方式
