@@ -41,20 +41,7 @@
 
   </node>
 
-  <!-- DLIO Mapping Node -->
-  <node ns="$(arg robot_namespace)" name="dlio_map" pkg="direct_lidar_inertial_odometry" type="dlio_map_node" output="screen" clear_params="true">
-
-    <!-- Load parameters -->
-    <rosparam file="$(find direct_lidar_inertial_odometry)/cfg/dlio.yaml" command="load"/>
-    <rosparam file="$(find direct_lidar_inertial_odometry)/cfg/params.yaml" command="load"/>
-
-    <!-- Subscriptions -->
-    <remap from="~keyframes" to="dlio/odom_node/pointcloud/keyframe"/>
-
-    <!-- Publications -->
-    <remap from="~map" to="dlio/map_node/map"/>
-
-  </node>
+  
 
   <!-- RViz -->
   <node pkg="rviz" type="rviz" name="dlio_rviz" args="-d $(find direct_lidar_inertial_odometry)/launch/dlio.rviz" if="$(arg rviz)"/>
