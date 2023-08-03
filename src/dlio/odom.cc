@@ -839,6 +839,8 @@ void dlio::OdomNode::initializeInputTarget() {
   this->tempKeyframe.rot = this->currentFusionState.q;
   this->tempKeyframe.vSim = {1};
   this->tempKeyframe.submap_kf_idx = {0};
+  this->tempKeyframe.time = this->scan_stamp;
+  this->v_kf_time.push_back(this->scan_stamp);
   pcl::copyPointCloud(*this->current_scan, *this->tempKeyframe.pCloud);
   this->KeyframesInfo.push_back(this->tempKeyframe);
 
@@ -921,8 +923,8 @@ void dlio::OdomNode::callbackGPS(const sensor_msgs::NavSatFixConstPtr &gps)
             this->gps_pub_test.publish(odom);
             if (this->gps_init)
             {
-                ROS_INFO("Get GPS coord in UTM frame x = %0.2f , y = %0.2f, z = %0.2f", x - initx, y - inity, z - initz);
-                ROS_INFO("Get GPS coord in MAP frame x = %0.2f , y = %0.2f, z = %0.2f", this->gps_meas.x, this->gps_meas.y, this->gps_meas.z);
+//                ROS_INFO("Get GPS coord in UTM frame x = %0.2f , y = %0.2f, z = %0.2f", x - initx, y - inity, z - initz);
+//                ROS_INFO("Get GPS coord in MAP frame x = %0.2f , y = %0.2f, z = %0.2f", this->gps_meas.x, this->gps_meas.y, this->gps_meas.z);
             }
         }
 
@@ -991,6 +993,11 @@ void dlio::OdomNode::callbackGPS(const sensor_msgs::NavSatFixConstPtr &gps)
                     }
                 }
 
+                for (int i = 0; i < match_gps.size(); i++)
+                {
+                    ROS_INFO("gps time = %0.6f, map time = %0.6f", match_gps[i].time, match_map[i].time);
+                }
+
                 gps_center = gps_center / match_gps.size();
                 map_center = map_center / match_map.size();
 
@@ -1019,7 +1026,13 @@ void dlio::OdomNode::callbackGPS(const sensor_msgs::NavSatFixConstPtr &gps)
                          this->R_M_G(0, 0), this->R_M_G(0, 1), this->R_M_G(0, 2),
                          this->R_M_G(1, 0), this->R_M_G(1, 1), this->R_M_G(1, 2),
                          this->R_M_G(2, 0), this->R_M_G(2, 1), this->R_M_G(2, 2));
+                ROS_INFO("t_M_G = \n [%0.2f, %0.2f, %0.2f]", this->t_M_G.x(), this->t_M_G.y(), this->t_M_G.z());
             }
+        }
+        else
+        {
+            std::lock_guard<std::mutex> lock(this->val_gps_mutex);
+            this->v_val_gps.push_back(this->gps_meas);
         }
 
     }
@@ -2061,7 +2074,7 @@ void dlio::OdomNode:: updateKeyframes() {
 
         std::unique_lock<decltype(this->tempKeyframe_mutex)> lock_temp(this->tempKeyframe_mutex);
         pcl::copyPointCloud(*this->current_scan_w, *this->tempKeyframe.pCloud);
-
+        this->tempKeyframe.time = this->scan_stamp;
         this->tempKeyframe.rot = this->state.q;
         this->tempKeyframe.pos = this->state.p;
         this->KeyframesInfo.push_back(this->tempKeyframe);
@@ -2275,7 +2288,7 @@ void dlio::OdomNode::buildSubmapViaJaccard(dlio::OdomNode::State vehicle_state)
     lock.unlock();
 
     // 进行排序 获得距离前submap_knn的关键帧
-    this->pushSubmapIndices(ds, 15, keyframe_nn);
+    this->pushSubmapIndices(ds, this->submap_knn_, keyframe_nn);
     // 与每个关键帧交集点的数量
     std::vector<int> intersection_nums;
     intersection_nums.reserve(this->submap_kf_idx_curr.size());
@@ -3315,7 +3328,58 @@ void dlio::OdomNode::addOdomFactor()
 
 void dlio::OdomNode::addGPSFactor()
 {
+    static int last_val_gps_size = 0;
+    std::unique_lock<std::mutex> lock(this->val_gps_mutex);
+    int current_size = this->v_val_gps.size();
+    lock.unlock();
 
+    // 有未处理的GPS消息 且历史GPS大于2帧
+    if (current_size > last_val_gps_size && current_size > 1)
+    {
+        last_val_gps_size = current_size;
+        lock.lock();
+        auto current_gps_meas = this->v_val_gps[current_size - 1];
+        auto last_gps_meas = this->v_val_gps[current_size - 2];
+        lock.unlock();
+
+        double current_gps_time = current_gps_meas.time;
+        // 筛选出与当前处理GPS时间戳最近的关键帧id
+        double min_time_diff = 10e5;
+        int matched_id = -1;
+        for (int i = 0; i < this->v_kf_time.size(); i++)
+        {
+            double time_diff = abs(current_gps_time - this->v_kf_time[i]);
+            if (time_diff < min_time_diff)
+            {
+                min_time_diff = time_diff;
+                matched_id = i;
+            }
+        }
+
+        // 得到与当前GPS匹配的关键帧
+        if (matched_id != -1 && this->gps_node_id.find(matched_id) == this->gps_node_id.end())
+        {
+            this->gps_node_id.insert(matched_id);
+            // 用匀速运动插值
+            // TODO IMU积分插值
+            Eigen::Vector3d begin_point = {last_gps_meas.x, last_gps_meas.y, last_gps_meas.z};
+            Eigen::Vector3d end_point = {current_gps_meas.x, current_gps_meas.y, current_gps_meas.z};
+            double begin_time = last_gps_meas.time;
+            double end_time = current_gps_time;
+            double kf_time = this->v_kf_time[matched_id];
+
+            Eigen::Vector3d kf_point = {0, 0, 0};
+            kf_point = begin_point + (end_point - begin_point) / (end_time - begin_time) * (kf_time - begin_time);
+
+            gtsam::Vector Vector3(3);
+            Vector3 << 1.0, 1.0, 1.0;
+            gtsam::noiseModel::Diagonal::shared_ptr gps_noise = gtsam::noiseModel::Diagonal::Variances(Vector3);
+            gtsam::GPSFactor gpsFactor(matched_id, gtsam::Vector3(kf_point), gps_noise);
+            this->gtSAMgraph.add(gpsFactor);
+        }
+    }
+    else
+        return;
 }
 
 void dlio::OdomNode::loopVisual()
@@ -3542,6 +3606,7 @@ void dlio::OdomNode::updateCurrentInfo()
     this->keyframe_normals.push_back(this->gicp.getSourceCovariances());
     this->keyframe_transformations.push_back(this->T_corr);
     this->keyframe_transformations_prior.push_back(this->T_prior);
+    this->v_kf_time.push_back(this->scan_stamp);
     lock.unlock();
 
     std::unique_lock<decltype(this->tempKeyframe_mutex)> lock_temp(this->tempKeyframe_mutex);
@@ -3581,6 +3646,9 @@ void dlio::OdomNode::saveKeyframeAndUpdateFactor()
 
         // 添加里程计因子
         this->addOdomFactor();
+
+        // 添加GPS因子
+        this->addGPSFactor();
 
         // 添加闭环因子
         this->addLoopFactor();

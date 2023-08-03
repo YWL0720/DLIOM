@@ -79,6 +79,10 @@ private:
   std::vector<GPSMeas> v_gps_init;
   std::vector<GPSMeas> v_gps_state;
 
+  std::unordered_set<int> gps_node_id;
+  std::mutex val_gps_mutex;
+  std::vector<GPSMeas> v_val_gps;
+
   std::mutex gps_mutex;
   GPSMeas gps_meas;
   GPSMeas last_gps_meas;
@@ -211,7 +215,10 @@ private:
       Eigen::Quaternionf rot;
       std::vector<float> vSim = {};
       std::vector<int> submap_kf_idx = {};
+      double time;
   };
+
+  std::vector<double> v_kf_time;
   KeyframeInfo tempKeyframe;
   std::vector<KeyframeInfo> KeyframesInfo;
   std::vector<std::pair<std::pair<Eigen::Vector3f, Eigen::Quaternionf>,

@@ -51,9 +51,9 @@ dlio:
     submap:
       useJaccard: true
       keyframe:
-        knn: 20
-        kcv: 20
-        kcc: 20
+        knn: 30
+        kcv: 30
+        kcc: 30
     gicp:
       minNumPoints: 64
       kCorrespondences: 16
