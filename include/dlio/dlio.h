@@ -96,6 +96,9 @@ std::string to_string_with_precision(const T a_value, const int n = 6)
 #include <gtsam/nonlinear/ISAM2.h>
 
 // GeographicLib
+#include <GeographicLib/Geocentric.hpp>
+#include <GeographicLib/LocalCartesian.hpp>
+#include <GeographicLib/Geoid.hpp>
 #include <GeographicLib/GeoCoords.hpp>
 
 namespace dlio {

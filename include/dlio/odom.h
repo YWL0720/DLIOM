@@ -28,6 +28,7 @@ public:
   void addOdomFactor();
   void addLoopFactor();
   void addGPSFactor();
+  void addGPSFactorWithoutAlign();
   void loopVisual();
   void correctPoses();
   void updateMap();
@@ -63,21 +64,27 @@ private:
   // GPS
   Eigen::Matrix3d R_M_G = Eigen::Matrix3d::Identity();
   Eigen::Vector3d t_M_G = Eigen::Vector3d::Zero();
+  GeographicLib::LocalCartesian geo_converter;
+
 
   struct GPSMeas
   {
-      GPSMeas() {};
-      GPSMeas(double x_, double y_, double z_, double time_) : x(x_), y(y_), z(z_), time(time_) {};
+      GPSMeas() { mathced_id = -1; };
+      GPSMeas(double x_, double y_, double z_, double time_) : x(x_), y(y_), z(z_), time(time_) { mathced_id = -1; };
       double x;
       double y;
       double z;
       double time;
       Eigen::Matrix3d cov;
+      int mathced_id;
   };
 
   std::vector<GPSMeas> v_gps_meas;
   std::vector<GPSMeas> v_gps_init;
   std::vector<GPSMeas> v_gps_state;
+
+  std::mutex gps_buffer_mutex;
+  std::vector<GPSMeas> gps_buffer;
 
   std::unordered_set<int> gps_node_id;
   std::mutex val_gps_mutex;
@@ -93,6 +100,10 @@ private:
   void callbackPointCloud(const sensor_msgs::PointCloud2ConstPtr& pc);
   void callbackImu(const sensor_msgs::Imu::ConstPtr& imu);
   void callbackGPS(const sensor_msgs::NavSatFixConstPtr& gps);
+  void callbackGPSWithoutAlign(const sensor_msgs::NavSatFixConstPtr& gps);
+  bool matchGPSWithKf(GPSMeas& gps);
+
+
 
   void publishPose(const ros::TimerEvent& e);
 

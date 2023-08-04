@@ -1,7 +1,5 @@
 # DLIOM
 
----
-
 **这份代码是基于[direct_lidar_inertial_odometry](https://github.com/vectr-ucla/direct_lidar_inertial_odometry)**，对论文[Direct LiDAR-Inertial Odometry and Mapping: Perceptive and Connective SLAM](https://arxiv.org/abs/2305.01843)的早期复现改进版本。
 
 **代码功能正在持续完善中，当前仍然存在较多bug，仍在努力测试修改**
@@ -80,6 +78,7 @@ catkin_make
 - 8.1 增加GeographicLib的GPS预处理接口
 - 8.2 完成GPS回调 UTM与Lidar系的初始化对齐 
 - 8.3 添加了GPS因子
+- 8.4 增加了一种引入GPS因子的方式 待测试
 
 ### TODO:
 - 重新制定submap构建时关键帧位姿的确定方式
