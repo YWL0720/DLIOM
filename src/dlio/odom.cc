@@ -47,7 +47,7 @@ dlio::OdomNode::OdomNode(ros::NodeHandle node_handle) : nh(node_handle) {
   this->imu_sub = this->nh.subscribe("imu", 1000,
       &dlio::OdomNode::callbackImu, this, ros::TransportHints().tcpNoDelay());
 
-  this->gps_sub = this->nh.subscribe<sensor_msgs::NavSatFix>("gps", 1000, &dlio::OdomNode::callbackGPSWithoutAlign, this, ros::TransportHints().tcpNoDelay());
+  this->gps_sub = this->nh.subscribe<sensor_msgs::NavSatFix>("gps", 1000, &dlio::OdomNode::callbackGPS, this, ros::TransportHints().tcpNoDelay());
 
   this->odom_pub     = this->nh.advertise<nav_msgs::Odometry>("odom", 1, true);
   this->pose_pub     = this->nh.advertise<geometry_msgs::PoseStamped>("pose", 1, true);
@@ -870,41 +870,31 @@ void dlio::OdomNode::initializeDLIO() {
 
 void dlio::OdomNode::callbackGPS(const sensor_msgs::NavSatFixConstPtr &gps)
 {
-
-    GeographicLib::GeoCoords geoCoords(gps->latitude, gps->longitude);
-
-    Eigen::Matrix3d gps_cov;
-    gps_cov << gps->position_covariance[0], gps->position_covariance[1], gps->position_covariance[2],
-               gps->position_covariance[3], gps->position_covariance[4], gps->position_covariance[5],
-               gps->position_covariance[6], gps->position_covariance[7], gps->position_covariance[8];
-
-    auto get_xy = [&](double& x, double& y) {
-        stringstream ss(geoCoords.AltUTMUPSRepresentation(2));
-        vector<string> temp;
-        string temp_string;
-        while(ss >> temp_string)
-            temp.push_back(temp_string);
-
-        x = stod(temp[1]);
-        y = stod(temp[2]);
-    };
-
-    double x, y, z;
-    get_xy(x, y);
-    z = gps->altitude;
+    static bool init_origin = false;
 
     if (this->dlio_initialized)
     {
-        static double initx = x;
-        static double inity = y;
-        static double initz = z;
+        Eigen::Vector3d lla = {gps->latitude, gps->longitude, gps->altitude};
 
-        Eigen::Vector3d gps_origin = {x - initx, y - inity, z - initz};
-        Eigen::Vector3d gps_map = this->R_M_G * gps_origin + this->t_M_G;
+        if (!init_origin)
+        {
+            this->geo_converter.Reset(lla[0], lla[1], lla[2]);
+            init_origin = true;
+            ROS_INFO("GPS origin init!");
+        }
+
+        Eigen::Vector3d ENU = {0, 0, 0};
+        this->geo_converter.Forward(lla[0], lla[1], lla[2], ENU[0], ENU[1], ENU[2]);
+
+        Eigen::Vector3d gps_map = this->R_M_G * ENU + this->t_M_G;
 
         this->gps_meas.x = gps_map.x();
         this->gps_meas.y = gps_map.y();
         this->gps_meas.z = gps_map.z();
+        this->gps_meas.cov = Eigen::Vector3d(gps->position_covariance[0],
+                                             gps->position_covariance[4],
+                                             gps->position_covariance[8]).asDiagonal();
+
         this->gps_meas.time = gps->header.stamp.toSec();
 
         std::unique_lock<decltype(this->gps_mutex)> lock_gps(this->gps_mutex);
@@ -920,11 +910,6 @@ void dlio::OdomNode::callbackGPS(const sensor_msgs::NavSatFixConstPtr &gps)
             odom.pose.pose.position.y = this->gps_meas.y;
             odom.pose.pose.position.z = this->gps_meas.z;
             this->gps_pub_test.publish(odom);
-            if (this->gps_init)
-            {
-//                ROS_INFO("Get GPS coord in UTM frame x = %0.2f , y = %0.2f, z = %0.2f", x - initx, y - inity, z - initz);
-//                ROS_INFO("Get GPS coord in MAP frame x = %0.2f , y = %0.2f, z = %0.2f", this->gps_meas.x, this->gps_meas.y, this->gps_meas.z);
-            }
         }
 
         auto gps_distance = [](GPSMeas meas1, GPSMeas meas2) {
@@ -935,16 +920,13 @@ void dlio::OdomNode::callbackGPS(const sensor_msgs::NavSatFixConstPtr &gps)
 
         if (!this->gps_init)
         {
-            if (gps_distance(this->last_gps_meas, this->gps_meas) < 0.5)
+            if (gps_distance(this->last_gps_meas, this->gps_meas) > 0.5 && this->gps_meas.cov.trace() < 4.0)
             {
-                ROS_WARN("Vehicle do not move, GPS can't initialize");
-            }
-            else
-            {
+                ROS_INFO("GNSS preparing now: %d, hope: 50", this->v_gps_init.size());
                 this->v_gps_init.push_back(this->gps_meas);
             }
 
-            if (this->v_gps_init.size() > 50 && gps_distance(this->v_gps_meas.front(), this->v_gps_meas.back()) > 10)
+            if (this->v_gps_init.size() > 50 && gps_distance(this->v_gps_meas.front(), this->v_gps_meas.back()) > 20)
             {
 
                 std::unique_lock<std::mutex> lock(this->gps_mutex);
@@ -3401,7 +3383,7 @@ void dlio::OdomNode::addGPSFactor()
 
             // TODO 协方差未转换到UTM下
             gtsam::Vector Vector3(3);
-            Vector3 << 1.0, 1.0, 1.0;
+            Vector3 << 1.0, 1.0, 10.0;
             gtsam::noiseModel::Diagonal::shared_ptr gps_noise = gtsam::noiseModel::Diagonal::Variances(Vector3);
             gtsam::GPSFactor gpsFactor(matched_id, gtsam::Vector3(kf_point), gps_noise);
             ROS_INFO("Add a gps factor");
@@ -3762,7 +3744,7 @@ void dlio::OdomNode::saveKeyframeAndUpdateFactor()
         this->addOdomFactor();
 
         // 添加GPS因子
-        this->addGPSFactorWithoutAlign();
+        this->addGPSFactor();
 
         // 添加闭环因子
         this->addLoopFactor();
