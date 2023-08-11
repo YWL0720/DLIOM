@@ -2303,7 +2303,6 @@ void dlio::OdomNode::buildSubmapViaJaccard(dlio::OdomNode::State vehicle_state)
                 }
             }
 
-
         }
         // 如果筛选后的关键帧大于3帧 那么就用筛选后的子地图 如果不够3帧 则用相似度最大的三帧
         if (submap_kf_idx_curr_final.size() > 3)
@@ -3529,16 +3528,34 @@ void dlio::OdomNode::correctPoses()
     }
     else
     {
-        geometry_msgs::Pose p;
-        p.position.x = this->iSAMCurrentEstimate.at<gtsam::Pose3>(this->iSAMCurrentEstimate.size() - 1).translation().vector().cast<float>()[0];
-        p.position.y = this->iSAMCurrentEstimate.at<gtsam::Pose3>(this->iSAMCurrentEstimate.size() - 1).translation().vector().cast<float>()[1];
-        p.position.z = this->iSAMCurrentEstimate.at<gtsam::Pose3>(this->iSAMCurrentEstimate.size() - 1).translation().vector().cast<float>()[2];
+//        geometry_msgs::Pose p;
+//        p.position.x = this->iSAMCurrentEstimate.at<gtsam::Pose3>(this->iSAMCurrentEstimate.size() - 1).translation().vector().cast<float>()[0];
+//        p.position.y = this->iSAMCurrentEstimate.at<gtsam::Pose3>(this->iSAMCurrentEstimate.size() - 1).translation().vector().cast<float>()[1];
+//        p.position.z = this->iSAMCurrentEstimate.at<gtsam::Pose3>(this->iSAMCurrentEstimate.size() - 1).translation().vector().cast<float>()[2];
+//
+//        p.orientation.w = this->iSAMCurrentEstimate.at<gtsam::Pose3>(this->iSAMCurrentEstimate.size() - 1).rotation().toQuaternion().w();
+//        p.orientation.x = this->iSAMCurrentEstimate.at<gtsam::Pose3>(this->iSAMCurrentEstimate.size() - 1).rotation().toQuaternion().x();
+//        p.orientation.y = this->iSAMCurrentEstimate.at<gtsam::Pose3>(this->iSAMCurrentEstimate.size() - 1).rotation().toQuaternion().y();
+//        p.orientation.z = this->iSAMCurrentEstimate.at<gtsam::Pose3>(this->iSAMCurrentEstimate.size() - 1).rotation().toQuaternion().z();
+//        this->global_pose.poses.push_back(p);
+        this->global_pose.poses.clear();
+        std::unique_lock<decltype(this->keyframes_mutex)> lock_kf(this->keyframes_mutex);
+        for (int i = 0; i < this->iSAMCurrentEstimate.size(); i++)
+        {
+            this->keyframes[i].first.first = this->iSAMCurrentEstimate.at<gtsam::Pose3>(i).translation().cast<float>();
+            this->keyframes[i].first.second = this->iSAMCurrentEstimate.at<gtsam::Pose3>(i).rotation().toQuaternion().cast<float>();
 
-        p.orientation.w = this->iSAMCurrentEstimate.at<gtsam::Pose3>(this->iSAMCurrentEstimate.size() - 1).rotation().toQuaternion().w();
-        p.orientation.x = this->iSAMCurrentEstimate.at<gtsam::Pose3>(this->iSAMCurrentEstimate.size() - 1).rotation().toQuaternion().x();
-        p.orientation.y = this->iSAMCurrentEstimate.at<gtsam::Pose3>(this->iSAMCurrentEstimate.size() - 1).rotation().toQuaternion().y();
-        p.orientation.z = this->iSAMCurrentEstimate.at<gtsam::Pose3>(this->iSAMCurrentEstimate.size() - 1).rotation().toQuaternion().z();
-        this->global_pose.poses.push_back(p);
+            geometry_msgs::Pose p;
+            p.position.x = this->iSAMCurrentEstimate.at<gtsam::Pose3>(i).translation().vector().cast<float>()[0];
+            p.position.y = this->iSAMCurrentEstimate.at<gtsam::Pose3>(i).translation().vector().cast<float>()[1];
+            p.position.z = this->iSAMCurrentEstimate.at<gtsam::Pose3>(i).translation().vector().cast<float>()[2];
+
+            p.orientation.w = this->iSAMCurrentEstimate.at<gtsam::Pose3>(i).rotation().toQuaternion().w();
+            p.orientation.x = this->iSAMCurrentEstimate.at<gtsam::Pose3>(i).rotation().toQuaternion().x();
+            p.orientation.y = this->iSAMCurrentEstimate.at<gtsam::Pose3>(i).rotation().toQuaternion().y();
+            p.orientation.z = this->iSAMCurrentEstimate.at<gtsam::Pose3>(i).rotation().toQuaternion().z();
+            this->global_pose.poses.push_back(p);
+        }
 
     }
     this->global_pose.header.stamp = ros::Time::now();
