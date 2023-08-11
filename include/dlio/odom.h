@@ -103,6 +103,7 @@ private:
   void callbackGPSWithoutAlign(const sensor_msgs::NavSatFixConstPtr& gps);
   bool matchGPSWithKf(GPSMeas& gps);
 
+  void getTransformBetweenMapAndGPS(std::vector<GPSMeas>& gps_init, std::vector<GPSMeas>& gps_state);
 
 
   void publishPose(const ros::TimerEvent& e);
