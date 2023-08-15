@@ -15,8 +15,10 @@
   <arg name="robot_namespace" default="robot"/>
   <arg name="rviz" default="true"/>
 
-  <arg name="pointcloud_topic" default="/points_raw"/>
-  <arg name="imu_topic" default="/imu_raw"/>
+  <arg name="pointcloud_topic" default="/kitti/velo/pointcloud"/>
+  <arg name="imu_topic" default="/kitti/oxts/imu"/>
+  <arg name="gps_topic" default="/gps/fix"/>
+  
 
   <!-- DLIO Odometry Node -->
   <node ns="$(arg robot_namespace)" name="dlio_odom" pkg="direct_lidar_inertial_odometry" type="dlio_odom_node" output="screen" clear_params="true">
@@ -28,6 +30,7 @@
     <!-- Subscriptions -->
     <remap from="~pointcloud" to="$(arg pointcloud_topic)"/>
     <remap from="~imu" to="$(arg imu_topic)"/>
+    <remap from="~gps" to="$(arg gps_topic)"/>
 
     <!-- Publications -->
     <remap from="~odom"     to="dlio/odom_node/odom"/>

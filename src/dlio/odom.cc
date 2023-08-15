@@ -13,25 +13,12 @@
 #include "dlio/odom.h"
 
 dlio::OdomNode::OdomNode(ros::NodeHandle node_handle) : nh(node_handle) {
-
-  this->count = 0;
-  this->global_map = pcl::PointCloud<PointType>::Ptr (boost::make_shared<pcl::PointCloud<PointType>>());
-
-  gtsam::ISAM2Params params;
-  params.relinearizeThreshold = 0.01;
-  params.relinearizeSkip = 1;
-  this->isam = new gtsam::ISAM2(params);
-
-  this->keyframe_pose_corr = Eigen::Isometry3f::Identity();
-  this->icpScore = 1.0;
-
-
-
-
   // 获取rosparam
   this->getParams();
 
   this->num_threads_ = omp_get_max_threads();
+
+  // flag
 
   this->dlio_initialized = false;
   this->first_valid_scan = false;
@@ -40,15 +27,19 @@ dlio::OdomNode::OdomNode(ros::NodeHandle node_handle) : nh(node_handle) {
   else {this->imu_calibrated = true;}
   this->deskew_status = false;
   this->deskew_size = 0;
+
+  // callback
   // 注册雷达回调
   this->lidar_sub = this->nh.subscribe("pointcloud", 1,
       &dlio::OdomNode::callbackPointCloud, this, ros::TransportHints().tcpNoDelay());
   // 注册IMU回调
   this->imu_sub = this->nh.subscribe("imu", 1000,
       &dlio::OdomNode::callbackImu, this, ros::TransportHints().tcpNoDelay());
+  // 注册GPS回调
+  this->gps_sub = this->nh.subscribe<sensor_msgs::NavSatFix>("gps", 1000,
+      &dlio::OdomNode::callbackGPS, this, ros::TransportHints().tcpNoDelay());
 
-  this->gps_sub = this->nh.subscribe<sensor_msgs::NavSatFix>("gps", 1000, &dlio::OdomNode::callbackGPS, this, ros::TransportHints().tcpNoDelay());
-
+  // publisher
   this->odom_pub     = this->nh.advertise<nav_msgs::Odometry>("odom", 1, true);
   this->pose_pub     = this->nh.advertise<geometry_msgs::PoseStamped>("pose", 1, true);
   this->path_pub     = this->nh.advertise<nav_msgs::Path>("path", 1, true);
@@ -57,17 +48,17 @@ dlio::OdomNode::OdomNode(ros::NodeHandle node_handle) : nh(node_handle) {
   this->deskewed_pub = this->nh.advertise<sensor_msgs::PointCloud2>("deskewed", 1, true);
   this->kf_connect_pub = this->nh.advertise<visualization_msgs::Marker>("kf_connect", 1, true);
   this->loop_constraint_pub = this->nh.advertise<visualization_msgs::Marker>("loop_constraint", 1, true);
-
   this->global_map_pub = this->nh.advertise<sensor_msgs::PointCloud2>("global_map", 100);
   this->publish_timer = this->nh.createTimer(ros::Duration(0.01), &dlio::OdomNode::publishPose, this);
   this->global_pose_pub = this->nh.advertise<geometry_msgs::PoseArray>("global_odom", 1, true);
-
   this->gps_pub_test = this->nh.advertise<nav_msgs::Odometry>("odom_gps", 1000);
 
+  // transform
   this->T = Eigen::Matrix4f::Identity();
   this->T_prior = Eigen::Matrix4f::Identity();
   this->T_corr = Eigen::Matrix4f::Identity();
 
+  // state
   this->origin = Eigen::Vector3f(0., 0., 0.);
   this->state.p = Eigen::Vector3f(0., 0., 0.);
   this->state.q = Eigen::Quaternionf(1., 0., 0., 0.);
@@ -79,6 +70,7 @@ dlio::OdomNode::OdomNode(ros::NodeHandle node_handle) : nh(node_handle) {
   this->lidarPose.p = Eigen::Vector3f(0., 0., 0.);
   this->lidarPose.q = Eigen::Quaternionf(1., 0., 0., 0.);
 
+  // imu meas
   this->imu_meas.stamp = 0.;
   this->imu_meas.ang_vel[0] = 0.;
   this->imu_meas.ang_vel[1] = 0.;
@@ -88,23 +80,29 @@ dlio::OdomNode::OdomNode(ros::NodeHandle node_handle) : nh(node_handle) {
   this->imu_meas.lin_accel[2] = 0.;
 
   this->imu_buffer.set_capacity(this->imu_buffer_size_);
+
+  // time stamp
   this->first_imu_stamp = 0.;
   this->prev_imu_stamp = 0.;
+  this->first_scan_stamp = 0.;
+  this->elapsed_time = 0.;
 
+  // pointcloud
   this->original_scan = pcl::PointCloud<PointType>::ConstPtr (boost::make_shared<const pcl::PointCloud<PointType>>());
   this->deskewed_scan = pcl::PointCloud<PointType>::ConstPtr (boost::make_shared<const pcl::PointCloud<PointType>>());
   this->current_scan = pcl::PointCloud<PointType>::ConstPtr (boost::make_shared<const pcl::PointCloud<PointType>>());
   this->current_scan_w = pcl::PointCloud<PointType>::Ptr (boost::make_shared<pcl::PointCloud<PointType>>());
   this->current_scan_lidar = pcl::PointCloud<PointType>::Ptr (boost::make_shared<pcl::PointCloud<PointType>>());
   this->submap_cloud = pcl::PointCloud<PointType>::ConstPtr (boost::make_shared<const pcl::PointCloud<PointType>>());
+  this->global_map = pcl::PointCloud<PointType>::Ptr (boost::make_shared<pcl::PointCloud<PointType>>());
+
 
   this->num_processed_keyframes = 0;
 
+  // submap
   this->submap_hasChanged = true;
   this->submap_kf_idx_prev.clear();
 
-  this->first_scan_stamp = 0.;
-  this->elapsed_time = 0.;
   this->length_traversed;
 
   this->convex_hull.setDimension(3);
@@ -112,6 +110,15 @@ dlio::OdomNode::OdomNode(ros::NodeHandle node_handle) : nh(node_handle) {
   this->concave_hull.setAlpha(this->keyframe_thresh_dist_);
   this->concave_hull.setKeepInformation(true);
 
+  // gtsam
+  gtsam::ISAM2Params params;
+  params.relinearizeThreshold = 0.01;
+  params.relinearizeSkip = 1;
+  this->isam = new gtsam::ISAM2(params);
+  this->keyframe_pose_corr = Eigen::Isometry3f::Identity();
+  this->icpScore = 1.0;
+
+  // gicp config
   this->gicp.setCorrespondenceRandomness(this->gicp_k_correspondences_);
   this->gicp.setMaxCorrespondenceDistance(this->gicp_max_corr_dist_);
   this->gicp.setMaximumIterations(this->gicp_max_iter_);
@@ -134,17 +141,22 @@ dlio::OdomNode::OdomNode(ros::NodeHandle node_handle) : nh(node_handle) {
   this->gicp_tool.setRotationEpsilon(this->gicp_rotation_ep_);
   this->gicp_tool.setInitialLambdaFactor(this->gicp_init_lambda_factor_);
 
-//  pcl::Registration<PointType, PointType>::KdTreeReciprocalPtr temp;
-//  this->gicp.setSearchMethodSource(temp, true);
-//  this->gicp.setSearchMethodTarget(temp, true);
-//  this->gicp_temp.setSearchMethodSource(temp, true);
-//  this->gicp_temp.setSearchMethodTarget(temp, true);
-//
-//  this->gicp_tool.setSearchMethodSource(temp, true);
-//  this->gicp_tool.setSearchMethodTarget(temp, true);
-
+  // geo
   this->geo.first_opt_done = false;
   this->geo.prev_vel = Eigen::Vector3f(0., 0., 0.);
+
+  // visual
+  this->loop_marker.ns = "loop";
+  this->loop_marker.id = 0;
+  this->loop_marker.type = visualization_msgs::Marker::LINE_LIST;
+  this->loop_marker.scale.x = 0.1;
+  this->loop_marker.color.r = 1.0;
+  this->loop_marker.color.g = 0.0;
+  this->loop_marker.color.b = 0.0;
+  this->loop_marker.color.a = 1.0;
+  this->loop_marker.action = visualization_msgs::Marker::ADD;
+  this->loop_marker.pose.orientation.w = 1.0;
+
 
   pcl::console::setVerbosityLevel(pcl::console::L_ERROR);
 
@@ -196,27 +208,9 @@ dlio::OdomNode::OdomNode(ros::NodeHandle node_handle) : nh(node_handle) {
   }
   fclose(file);
 
-
-
-  this->loop_marker.ns = "loop";
-  this->loop_marker.id = 0;
-  this->loop_marker.type = visualization_msgs::Marker::LINE_LIST;
-  this->loop_marker.scale.x = 0.1;
-  this->loop_marker.color.r = 1.0;
-  this->loop_marker.color.g = 0.0;
-  this->loop_marker.color.b = 0.0;
-  this->loop_marker.color.a = 1.0;
-  this->loop_marker.action = visualization_msgs::Marker::ADD;
-  this->loop_marker.pose.orientation.w = 1.0;
-
-
-
-
-
-
+  // thread
   this->mapping_thread = std::thread(&dlio::OdomNode::updateMap, this);
   this->loop_thread = std::thread(&dlio::OdomNode::performLoop, this);
-
 }
 
 dlio::OdomNode::~OdomNode() {}
@@ -547,6 +541,10 @@ void dlio::OdomNode::publishKeyframe(std::pair<std::pair<Eigen::Vector3f, Eigen:
 
 }
 
+/**
+ * @brief @brief 转换原始点云的格式，取出NAN点，进行初步的裁剪
+ * @param pc 原始点云消息
+ */
 void dlio::OdomNode::getScanFromROS(const sensor_msgs::PointCloud2ConstPtr& pc) {
 
   // 将点云转换成pcl格式
@@ -580,6 +578,7 @@ void dlio::OdomNode::getScanFromROS(const sensor_msgs::PointCloud2ConstPtr& pc) 
     }
   }
 
+  // 时间field无法识别 则不能进行去畸变
   if (this->sensor == dlio::SensorType::UNKNOWN) {
     this->deskew_ = false;
   }
@@ -589,55 +588,69 @@ void dlio::OdomNode::getScanFromROS(const sensor_msgs::PointCloud2ConstPtr& pc) 
 
 }
 
+
+/**
+ * @brief 对点云进行去畸变
+ * 可以去畸变的             IMU传播得到的先验状态为当前帧时间戳中点对应状态
+ * 不可以去畸变的           IMU传播得到的先验状态为当前帧消息时间戳对应的状态
+ * original_scan         去NAN值，初步裁剪后的点云
+ * deskew_scan           去畸变，转换到T_prior的map系点云
+ * current_scan          deskew_scan降采样后的map系点云
+ * current_scan_lidar    去畸变且降采样后，(Lidar)(body)系下的点云
+ *
+ */
 void dlio::OdomNode::preprocessPoints() {
 
   // 对点云进行去畸变
-  // Deskew the original dlio-type scan
-  if (this->deskew_) {
-//    std::cout << "Deskew!" << std::endl;
+  if (this->deskew_)
+  {
     this->deskewPointcloud();
 
-    if (!this->first_valid_scan) {
+    if (!this->first_valid_scan)
+    {
       return;
     }
-
-  } else {
+  }
+  else
+  {
     // 不去畸变的情况 scan_stamp为消息头的时间
-//    std::cout << "No deskew!" << std::endl;
     this->scan_stamp = this->scan_header_stamp.toSec();
 
-    // don't process scans until IMU data is present
     // 第一帧不去畸变
-    if (!this->first_valid_scan) {
+    if (!this->first_valid_scan)
+    {
 
-      if (this->imu_buffer.empty() || this->scan_stamp <= this->imu_buffer.back().stamp) {
+      if (this->imu_buffer.empty() || this->scan_stamp <= this->imu_buffer.back().stamp)
+      {
         return;
       }
 
       this->first_valid_scan = true;
       this->T_prior = this->T; // assume no motion for the first scan
-
-    } else {
-
-      // IMU prior for second scan onwards
-    std::vector<Eigen::Matrix4f, Eigen::aligned_allocator<Eigen::Matrix4f>> frames;
+    }
+    else
+    {
+      // IMU积分到当前帧的scan_stamp处，此时scan_stamp等于消息时间戳
+      std::vector<Eigen::Matrix4f, Eigen::aligned_allocator<Eigen::Matrix4f>> frames;
       frames = this->integrateImu(this->prev_scan_stamp, this->lidarPose.q, this->lidarPose.p,
                                 this->geo.prev_vel.cast<float>(), {this->scan_stamp});
-    // 保存最后一个点的状态作为T_prior
-    if (frames.size() > 0) {
-      this->T_prior = frames.back();
-    } else {
-      this->T_prior = this->T;
-    }
+      // 保存最后一个点的状态作为T_prior
+      if (frames.size() > 0)
+      {
+          this->T_prior = frames.back();
+      }
+      else
+      {
+          this->T_prior = this->T;
+      }
 
     }
-
+    // 备份一下 当前帧去畸变后的原始点云
     this->current_scan_lidar->clear();
     pcl::transformPointCloud(*this->original_scan, *this->current_scan_lidar, this->extrinsics.baselink2lidar_T);
     this->voxel.setInputCloud(this->current_scan_lidar);
     this->voxel.filter(*this->current_scan_lidar);
 
-    // 转换到结束时刻
     pcl::PointCloud<PointType>::Ptr deskewed_scan_ (boost::make_shared<pcl::PointCloud<PointType>>());
     pcl::transformPointCloud (*this->original_scan, *deskewed_scan_,
                               this->T_prior * this->extrinsics.baselink2lidar_T);
@@ -646,37 +659,41 @@ void dlio::OdomNode::preprocessPoints() {
   }
 
   // 体素滤波进行降采样
-  // Voxel Grid Filter
-  if (this->vf_use_) {
+  if (this->vf_use_)
+  {
     pcl::PointCloud<PointType>::Ptr current_scan_
       (boost::make_shared<pcl::PointCloud<PointType>>(*this->deskewed_scan));
     this->voxel.setInputCloud(current_scan_);
     this->voxel.filter(*current_scan_);
     this->current_scan = current_scan_;
-  } else {
+  }
+  else
+  {
     this->current_scan = this->deskewed_scan;
   }
 
 }
 
+/**
+ * @brief 根据IMU积分的值对点云进行去畸变
+ */
 void dlio::OdomNode::deskewPointcloud() {
-  // 去畸变后的点云
+  // 去畸变后的点云 resize成和原始点云相同的大小
   pcl::PointCloud<PointType>::Ptr deskewed_scan_ (boost::make_shared<pcl::PointCloud<PointType>>());
   deskewed_scan_->points.resize(this->original_scan->points.size());
 
-  // 当前帧的参考时间
-  // individual point timestamps should be relative to this time
+  // 当前帧的参考时间 即点云消息的时间戳
   double sweep_ref_time = this->scan_header_stamp.toSec();
 
   // 分别用于比较点时间戳，判断时间戳是否相等，获得点的全局时间
-  // sort points by timestamp and build list of timestamps
   std::function<bool(const PointType&, const PointType&)> point_time_cmp;
   std::function<bool(boost::range::index_value<PointType&, long>,
                      boost::range::index_value<PointType&, long>)> point_time_neq;
   std::function<double(boost::range::index_value<PointType&, long>)> extract_point_time;
 
   // 根据不同的雷达型号，对以上三个函数分别进行定义
-  if (this->sensor == dlio::SensorType::OUSTER) {
+  if (this->sensor == dlio::SensorType::OUSTER)
+  {
 
     point_time_cmp = [](const PointType& p1, const PointType& p2)
       { return p1.t < p2.t; };
@@ -686,7 +703,9 @@ void dlio::OdomNode::deskewPointcloud() {
     extract_point_time = [&sweep_ref_time](boost::range::index_value<PointType&, long> pt)
       { return sweep_ref_time + pt.value().t * 1e-9f; };
 
-  } else if (this->sensor == dlio::SensorType::VELODYNE) {
+  }
+  else if (this->sensor == dlio::SensorType::VELODYNE)
+  {
 
     point_time_cmp = [](const PointType& p1, const PointType& p2)
       { return p1.time < p2.time; };
@@ -696,7 +715,9 @@ void dlio::OdomNode::deskewPointcloud() {
     extract_point_time = [&sweep_ref_time](boost::range::index_value<PointType&, long> pt)
       { return sweep_ref_time + pt.value().time; };
 
-  } else if (this->sensor == dlio::SensorType::HESAI) {
+  }
+  else if (this->sensor == dlio::SensorType::HESAI)
+  {
 
     point_time_cmp = [](const PointType& p1, const PointType& p2)
       { return p1.timestamp < p2.timestamp; };
@@ -707,22 +728,20 @@ void dlio::OdomNode::deskewPointcloud() {
       { return pt.value().timestamp; };
 
   }
-  // 根据时间从小到大的顺序对点云进行排序
-  // copy points into deskewed_scan_ in order of timestamp
+  // 根据时间从小到大的顺序对点云进行排序 将排序后的点存储在deskewed_scan_中
   std::partial_sort_copy(this->original_scan->points.begin(), this->original_scan->points.end(),
                          deskewed_scan_->points.begin(), deskewed_scan_->points.end(), point_time_cmp);
 
   // 对点云进行索引化并去除时间戳相同的点，得到时间戳唯一的点
-  // filter unique timestamps
   auto points_unique_timestamps = deskewed_scan_->points
                                   | boost::adaptors::indexed()
                                   | boost::adaptors::adjacent_filtered(point_time_neq);
 
   // 将上面去重后点云的时间戳也保存下来
-  // extract timestamps from points and put them in their own list
   std::vector<double> timestamps;
   std::vector<int> unique_time_indices;
-  for (auto it = points_unique_timestamps.begin(); it != points_unique_timestamps.end(); it++) {
+  for (auto it = points_unique_timestamps.begin(); it != points_unique_timestamps.end(); it++)
+  {
     timestamps.push_back(extract_point_time(*it));
     unique_time_indices.push_back(it->index());
   }
@@ -735,11 +754,12 @@ void dlio::OdomNode::deskewPointcloud() {
   // don't process scans until IMU data is present
   if (!this->first_valid_scan) 
   {
-    if (this->imu_buffer.empty() || this->scan_stamp <= this->imu_buffer.back().stamp) {
+    if (this->imu_buffer.empty() || this->scan_stamp <= this->imu_buffer.back().stamp)
+    {
       return;
     }
 
-    // 备份
+    // 备份去畸变且降采样后的点云到current_scan_lidar中
     this->current_scan_lidar->clear();
     pcl::transformPointCloud(*deskewed_scan_, *this->current_scan_lidar, this->extrinsics.baselink2lidar_T);
     this->voxel.setInputCloud(this->current_scan_lidar);
@@ -753,18 +773,18 @@ void dlio::OdomNode::deskewPointcloud() {
     this->deskew_status = true;
     return;
   }
+
   // 对于第二帧之后的情况
   // IMU prior & deskewing for second scan onwards
   std::vector<Eigen::Matrix4f, Eigen::aligned_allocator<Eigen::Matrix4f>> frames;
-  // IMU积分
+  // IMU积分 从上一帧中间时刻开始积分
   frames = this->integrateImu(this->prev_scan_stamp, this->lidarPose.q, this->lidarPose.p,
                               this->geo.prev_vel.cast<float>(), timestamps);
   this->deskew_size = frames.size(); // if integration successful, equal to timestamps.size()
 
   // 如果时间同步存在问题不进行去畸变
-  // if there are no frames between the start and end of the sweep
-  // that probably means that there's a sync issue
-  if (frames.size() != timestamps.size()) {
+  if (frames.size() != timestamps.size())
+  {
     ROS_FATAL("Bad time sync between LiDAR and IMU!");
 
     // 备份
@@ -779,20 +799,19 @@ void dlio::OdomNode::deskewPointcloud() {
     this->deskew_status = false;
     return;
   }
-  // 将时间中位数作为
-  // update prior to be the estimated pose at the median time of the scan (corresponds to this->scan_stamp)
+  // 将时间中位数IMU积分状态作为T_prior
   this->T_prior = frames[median_pt_index];
 
   // 去畸变 实际上这里只用到了IMU积分的值
-  // 备份
-
 #pragma omp parallel for num_threads(this->num_threads_)
-  for (int i = 0; i < timestamps.size(); i++) {
+  for (int i = 0; i < timestamps.size(); i++)
+  {
 
     Eigen::Matrix4f T = frames[i] * this->extrinsics.baselink2lidar_T;
 
     // transform point to world frame
-    for (int k = unique_time_indices[i]; k < unique_time_indices[i+1]; k++) {
+    for (int k = unique_time_indices[i]; k < unique_time_indices[i+1]; k++)
+    {
       auto &pt = deskewed_scan_->points[k];
       // 四维向量表示 前三维为xyz
       pt.getVector4fMap()[3] = 1.;
@@ -804,6 +823,7 @@ void dlio::OdomNode::deskewPointcloud() {
   this->deskewed_scan = deskewed_scan_;
   this->deskew_status = true;
 
+  // 备份current_scan_lidar
   this->current_scan_lidar->clear();
   pcl::transformPointCloud(*this->deskewed_scan, *this->current_scan_lidar, this->T_prior.inverse());
   this->voxel.setInputCloud(this->current_scan_lidar);
@@ -812,30 +832,34 @@ void dlio::OdomNode::deskewPointcloud() {
 }
 
 void dlio::OdomNode::initializeInputTarget() {
-  // 构建当前关键帧
+  // 构建第一个关键帧
+  // 更新prev_scan_stamp
   this->prev_scan_stamp = this->scan_stamp;
   // 保存关键帧的姿态 以及去畸变降采样后的点云
-  // keep history of keyframes
   this->keyframes.push_back(std::make_pair(std::make_pair(this->lidarPose.p, this->lidarPose.q), this->current_scan));
   // 保存关键帧消息时间戳
   this->keyframe_timestamps.push_back(this->scan_header_stamp);
   // 保存关键帧点云协方差
   this->keyframe_normals.push_back(this->gicp.getSourceCovariances());
-  // 初始T-corr为单位的
+  // 初始T-corr为单位的 T = T_corr * T_prior
   this->keyframe_transformations.push_back(this->T_corr);
   this->keyframe_transformations_prior.push_back(this->T_prior);
-
   this->keyframe_stateT.push_back(this->T);
 
-
+  // 保存历史的lidar系点云
   std::unique_lock<decltype(this->history_kf_lidar_mutex)> lock_his_lidar(this->history_kf_lidar_mutex);
   pcl::PointCloud<PointType>::Ptr temp(new pcl::PointCloud<PointType>);
   pcl::copyPointCloud(*this->current_scan_lidar, *temp);
   this->history_kf_lidar.push_back(temp);
   lock_his_lidar.unlock();
 
+  // 保存当前的关键帧信息 等待后端处理
+  // tempKeyframe的姿态这里有两种处理方法
+  // 1. 使用lidarPose 2. 使用state
+  // 根据DLIO作者的解释 使用lidarPose更加稳定
+  // (https://github.com/vectr-ucla/direct_lidar_inertial_odometry/issues/13#issuecomment-1638876779)
   this->currentFusionState = this->state;
-  this->tempKeyframe.pos = this->currentFusionState.p;
+  this->tempKeyframe.pos = this->lidarPose.p;
   this->tempKeyframe.rot = this->currentFusionState.q;
   this->tempKeyframe.vSim = {1};
   this->tempKeyframe.submap_kf_idx = {0};
@@ -846,10 +870,10 @@ void dlio::OdomNode::initializeInputTarget() {
 
   this->saveFirstKeyframeAndUpdateFactor();
 
-
 }
 
-void dlio::OdomNode::setInputSource() {
+void dlio::OdomNode::setInputSource()
+{
   // 加入kdtree
   this->gicp.setInputSource(this->current_scan);
   // 计算协方差
@@ -891,9 +915,14 @@ void dlio::OdomNode::callbackGPS(const sensor_msgs::NavSatFixConstPtr &gps)
         this->gps_meas.x = gps_map.x();
         this->gps_meas.y = gps_map.y();
         this->gps_meas.z = gps_map.z();
+
         this->gps_meas.cov = Eigen::Vector3d(gps->position_covariance[0],
                                              gps->position_covariance[4],
                                              gps->position_covariance[8]).asDiagonal();
+        if (this->gps_meas.cov.trace() < 0.1)
+        {
+            this->gps_meas.cov.setIdentity();
+        }
 
         this->gps_meas.time = gps->header.stamp.toSec();
 
@@ -938,7 +967,6 @@ void dlio::OdomNode::callbackGPS(const sensor_msgs::NavSatFixConstPtr &gps)
                 lock.unlock();
 
                 this->getTransformBetweenMapAndGPS(gps_pos, map_pos);
-
 
             }
         }
@@ -995,63 +1023,62 @@ void dlio::OdomNode::callbackGPSWithoutAlign(const sensor_msgs::NavSatFixConstPt
     }
 }
 
+/**
+ * @brief 雷达点云的回调函数
+ * @param pc 点云消息
+ */
 void dlio::OdomNode::callbackPointCloud(const sensor_msgs::PointCloud2ConstPtr& pc) {
-  this->count++;
-//  std::cout << "==========================================" << std::endl;
-//  std::cout << "This is No." << this->count << " frame" << std::endl;
-  static double total_time = 0;
-  std::chrono::steady_clock::time_point t1 = std::chrono::steady_clock::now();
+
   std::unique_lock<decltype(this->main_loop_running_mutex)> lock(main_loop_running_mutex);
   this->main_loop_running = true;
   lock.unlock();
   this->kf_update = false;
   double then = ros::Time::now().toSec();
 
-  if (this->first_scan_stamp == 0.) {
+  if (this->first_scan_stamp == 0.)
+  {
     this->first_scan_stamp = pc->header.stamp.toSec();
   }
 
   // 检查初始化
-  // DLIO Initialization procedures (IMU calib, gravity align)
-  if (!this->dlio_initialized) {
+  if (!this->dlio_initialized)
+  {
     this->initializeDLIO();
   }
 
   // 转换点云格式，对点云进行初步的裁剪
-  // Convert incoming scan into DLIO format
   this->getScanFromROS(pc);
 
   // 点云预处理 去畸变 降采样
-  // Preprocess points
   this->preprocessPoints();
 
-  if (!this->first_valid_scan) {
+  if (!this->first_valid_scan)
+  {
     return;
   }
 
-  if (this->current_scan->points.size() <= this->gicp_min_num_points_) {
+  if (this->current_scan->points.size() <= this->gicp_min_num_points_)
+  {
     ROS_FATAL("Low number of points in the cloud!");
     return;
   }
 
   // 计算sparsity
-  // Compute Metrics
-  this->metrics_thread = std::thread( &dlio::OdomNode::computeMetrics, this );
+  this->metrics_thread = std::thread( &dlio::OdomNode::computeMetrics, this);
   this->metrics_thread.detach();
 
   // 设置自适应参数
-  // Set Adaptive Parameters
-  if (this->adaptive_params_) {
+  if (this->adaptive_params_)
+  {
     this->setAdaptiveParams();
   }
 
   // 输入该帧点云
-  // Set new frame as input source
   this->setInputSource();
 
   // 将第一帧作为初始关键帧
-  // Set initial frame as first keyframe
-  if (this->keyframes.size() == 0) {
+  if (this->keyframes.size() == 0)
+  {
     this->initializeInputTarget();
     this->main_loop_running = false;
     // 异步执行
@@ -1062,22 +1089,18 @@ void dlio::OdomNode::callbackPointCloud(const sensor_msgs::PointCloud2ConstPtr& 
   }
 
   // scan to map求解位姿 并通过几何观测器计算IMU状态
-  // Get the next pose via IMU + S2M + GEO
   this->getNextPose();
   // 更新关键帧
-  // Update current keyframe poses and map
-//  this->updateKeyframes();
-
   this->saveKeyframeAndUpdateFactor();
 
-
   // 构建更新submap
-  // Build keyframe normals and submap if needed (and if we're not already waiting)
-  if (this->new_submap_is_ready) {
+  if (this->new_submap_is_ready)
+  {
     this->main_loop_running = false;
     this->submap_future =
       std::async( std::launch::async, &dlio::OdomNode::buildKeyframesAndSubmap, this, this->state );
-  } else {
+  } else
+  {
     lock.lock();
     this->main_loop_running = false;
     lock.unlock();
@@ -1085,41 +1108,29 @@ void dlio::OdomNode::callbackPointCloud(const sensor_msgs::PointCloud2ConstPtr& 
   }
 
   // 更新轨迹
-  // Update trajectory
   this->trajectory.push_back( std::make_pair(this->state.p, this->state.q) );
   // 更新时间戳
-  // Update time stamps
   this->lidar_rates.push_back( 1. / (this->scan_stamp - this->prev_scan_stamp) );
   this->prev_scan_stamp = this->scan_stamp;
   this->elapsed_time = this->scan_stamp - this->first_scan_stamp;
 
   // 在ROS内发布出去
-  // Publish stuff to ROS
   pcl::PointCloud<PointType>::ConstPtr published_cloud;
-  if (this->densemap_filtered_) {
+  if (this->densemap_filtered_)
+  {
     published_cloud = this->current_scan;
-  } else {
+  }
+  else
+  {
     published_cloud = this->deskewed_scan;
   }
   this->publish_thread = std::thread( &dlio::OdomNode::publishToROS, this, published_cloud, this->T_corr );
   this->publish_thread.detach();
 
-  // Update some statistics
   this->comp_times.push_back(ros::Time::now().toSec() - then);
   this->gicp_hasConverged = this->gicp.hasConverged();
 
-  // Debug statements and publish custom DLIO message
-//  this->debug_thread = std::thread( &dlio::OdomNode::debug, this );
-//  this->debug_thread.detach();
-
   this->geo.first_opt_done = true;
-
-  std::chrono::steady_clock::time_point t2 = std::chrono::steady_clock::now();
-  double time = std::chrono::duration_cast<std::chrono::duration<double> >(t2 - t1).count();
-  total_time += time;
-//  std::cout << "average time = " << total_time / count * 1000 << " ms" << std::endl;
-
-
 }
 
 void dlio::OdomNode::callbackImu(const sensor_msgs::Imu::ConstPtr& imu_raw) {
@@ -1277,48 +1288,36 @@ void dlio::OdomNode::callbackImu(const sensor_msgs::Imu::ConstPtr& imu_raw) {
 
 }
 
-void dlio::OdomNode::getNextPose() {
-  // Check if the new submap is ready to be used
+/**
+ * @brief 与submap进行GICP，获得当前帧的位姿
+ */
+void dlio::OdomNode::getNextPose()
+{
   this->new_submap_is_ready = (this->submap_future.wait_for(std::chrono::seconds(0)) == std::future_status::ready);
-  if (this->new_submap_is_ready && this->submap_hasChanged) {
-
-    // Set the current global submap as the target cloud
+  if (this->new_submap_is_ready && this->submap_hasChanged)
+  {
     // 输入submap点云作为target
 //    this->gicp.registerInputTarget(this->submap_cloud);
     this->gicp.setInputTarget(this->submap_cloud);
-    // Set submap kdtree
     // 设置submao kdtree为target kdtree
 //    this->gicp.target_kdtree_ = this->submap_kdtree;
-
-    // Set target cloud's normals as submap normals
     this->gicp.setTargetCovariances(this->submap_normals);
-
     this->submap_hasChanged = false;
   }
 
-  // Align with current submap with global IMU transformation as initial guess
   // 进行对齐
   pcl::PointCloud<PointType>::Ptr aligned (boost::make_shared<pcl::PointCloud<PointType>>());
   this->gicp.align(*aligned);
   this->icpScore = float(this->gicp.getFitnessScore());
-
-  // Get final transformation in global frame
   // 得到先验状态修正值
   this->T_corr = this->gicp.getFinalTransformation(); // "correction" transformation
 
-
-    // 对先验状态进行修正
+  // 对先验状态进行修正
   this->T = this->T_corr * this->T_prior;
 
-  // Update next global pose
-  // Both source and target clouds are in the global frame now, so tranformation is global
   this->propagateGICP();
-
-
-
-  // Geometric observer update
+  // 利用几何观测器 融合IMU与Lidar估计的结果
   this->updateState();
-
 }
 
 bool dlio::OdomNode::imuMeasFromTimeRange(double start_time, double end_time,
@@ -1365,7 +1364,8 @@ dlio::OdomNode::integrateImu(double start_time, Eigen::Quaternionf q_init, Eigen
 
   const std::vector<Eigen::Matrix4f, Eigen::aligned_allocator<Eigen::Matrix4f>> empty;
 
-  if (sorted_timestamps.empty() || start_time > sorted_timestamps.front()) {
+  if (sorted_timestamps.empty() || start_time > sorted_timestamps.front())
+  {
     // invalid input, return empty vector
     return empty;
   }
@@ -1373,7 +1373,8 @@ dlio::OdomNode::integrateImu(double start_time, Eigen::Quaternionf q_init, Eigen
   boost::circular_buffer<ImuMeas>::reverse_iterator begin_imu_it;
   boost::circular_buffer<ImuMeas>::reverse_iterator end_imu_it;
   // 获得start_time和end_time对应的 IMU测量数据段 分别保存在begin_imu_it和end_imu_it
-  if (this->imuMeasFromTimeRange(start_time, sorted_timestamps.back(), begin_imu_it, end_imu_it) == false) {
+  if (this->imuMeasFromTimeRange(start_time, sorted_timestamps.back(), begin_imu_it, end_imu_it) == false)
+  {
     // not enough IMU measurements, return empty vector
     return empty;
   }
@@ -1555,6 +1556,9 @@ dlio::OdomNode::integrateImuInternal(Eigen::Quaternionf q_init, Eigen::Vector3f 
 
 }
 
+/**
+ * @brief 将GICP的结果传播到世界坐标系，赋给lidarPose
+ */
 void dlio::OdomNode::propagateGICP() {
 
   this->lidarPose.p << this->T(0,3), this->T(1,3), this->T(2,3);
@@ -1613,7 +1617,11 @@ void dlio::OdomNode::propagateState() {
 
 }
 
-void dlio::OdomNode::updateState() {
+/**
+ * @brief 利用几何观测器融合结果
+ */
+void dlio::OdomNode::updateState()
+{
 
   // Lock thread to prevent state from being accessed by PropagateState
   std::lock_guard<std::mutex> lock( this->geo.mtx );
@@ -1629,7 +1637,8 @@ void dlio::OdomNode::updateState() {
   qe = qhat.conjugate()*qin;
 
   double sgn = 1.;
-  if (qe.w() < 0) {
+  if (qe.w() < 0)
+  {
     sgn = -1;
   }
 
@@ -1676,6 +1685,7 @@ void dlio::OdomNode::updateState() {
       this->v_gps_state.push_back(GPSMeas(this->state.p.x(), this->state.p.y(), this->state.p.z(), this->imu_stamp.toSec()));
   }
 
+  // 保存当前融合后的状态
   this->currentFusionState = this->state;
   this->currentFusionT = Eigen::Isometry3f::Identity();
   this->currentFusionT.translate(this->currentFusionState.p);
@@ -2405,7 +2415,6 @@ void dlio::OdomNode::buildSubmapViaJaccard(dlio::OdomNode::State vehicle_state)
 }
 
 void dlio::OdomNode::buildKeyframesAndSubmap(State vehicle_state) {
-  // transform the new keyframe(s) and associated covariance list(s)
   std::unique_lock<decltype(this->keyframes_mutex)> lock(this->keyframes_mutex);
   // 遍历关键帧 num_processed_keyframes初始化为0
   for (int i = this->num_processed_keyframes; i < this->keyframes.size(); i++) {
@@ -3208,6 +3217,9 @@ bool dlio::OdomNode::isKeyframe()
     return newKeyframe;
 }
 
+/**
+ * @brief 添加里程计因子 包含连续里程计和非连续里程计
+ */
 void dlio::OdomNode::addOdomFactor()
 {
     static int num_factor = 0;
@@ -3231,18 +3243,17 @@ void dlio::OdomNode::addOdomFactor()
         // 当前帧匹配的子地图关键帧相似度
         std::vector<float> curr_sim = current_kf_info.vSim;
         // 当前帧的位姿
-        gtsam::Pose3 poseTo = state2Pose3(this->state.q,
-                                          this->state.p);
+        gtsam::Pose3 poseTo = state2Pose3(current_kf_info.rot, current_kf_info.pos);
         // 遍历与当前帧匹配的子地图关键帧
         for (int i = 0; i < curr_submap_id.size(); i++)
         {
             // 子地图关键帧的位姿
             std::unique_lock<decltype(this->keyframes_mutex)> lock_kf(this->keyframes_mutex);
-            gtsam::Pose3 poseFrom = state2Pose3(this->keyframes[curr_submap_id[i]].first.second,
-                                                this->keyframes[curr_submap_id[i]].first.first);
+            gtsam::Pose3 poseFrom = state2Pose3(this->KeyframesInfo[curr_submap_id[i]].rot,
+                                                this->KeyframesInfo[curr_submap_id[i]].pos);
             lock_kf.unlock();
             // 噪声权重
-            double weight = 1.0 * this->icpScore;
+            double weight = 1.0;
 
             if (curr_sim.size() > 0)
             {
@@ -3253,7 +3264,7 @@ void dlio::OdomNode::addOdomFactor()
                 double sim = curr_sim[i] >= 1 ? 0.99 : curr_sim[i] < 0 ? 0 : curr_sim[i];
 
                 // 相似度越大 噪声权重越小
-                weight = 1 - sim;
+                weight = (1 - sim) * this->icpScore;
             }
             // 添加相邻/不相邻里程计因子
             gtsam::noiseModel::Diagonal::shared_ptr odometryNoise = gtsam::noiseModel::Diagonal::Variances(
@@ -3261,15 +3272,6 @@ void dlio::OdomNode::addOdomFactor()
             this->gtSAMgraph.emplace_shared<gtsam::BetweenFactor<gtsam::Pose3>>(curr_submap_id[i],
                                                                           num_factor,poseFrom.between(poseTo), odometryNoise);
         }
-//        std::unique_lock<decltype(this->keyframes_mutex)> lock_kf(this->keyframes_mutex);
-//        gtsam::Pose3 poseFrom = state2Pose3(this->keyframes[num_factor - 1].first.second,
-//                                            this->keyframes[num_factor - 1].first.first);
-//        lock_kf.unlock();
-//        gtsam::noiseModel::Diagonal::shared_ptr odometryNoise = gtsam::noiseModel::Diagonal::Variances(
-//                (gtsam::Vector(6) << 1e-6, 1e-6, 1e-6, 1e-4, 1e-4, 1e-4).finished());
-//        this->gtSAMgraph.emplace_shared<gtsam::BetweenFactor<gtsam::Pose3>>(num_factor - 1,
-//                                                                            num_factor,poseFrom.between(poseTo), odometryNoise);
-
         this->initialEstimate.insert(num_factor, poseTo);
     }
     num_factor++;
@@ -3650,11 +3652,14 @@ void dlio::OdomNode::updateMap()
 
 }
 
+/**
+ * @brief 更新当前的关键帧信息 历史信息 回环信息 为接下来后端处理做准备
+ */
 void dlio::OdomNode::updateCurrentInfo()
 {
-    // 更新关键帧信息
+    // 更新关键帧信息 关键帧位姿使用GICP的lidarPose
     std::unique_lock<decltype(this->keyframes_mutex)> lock(this->keyframes_mutex);
-    this->keyframes.push_back(std::make_pair(std::make_pair(this->currentFusionState.p, this->currentFusionState.q), this->current_scan));
+    this->keyframes.push_back(std::make_pair(std::make_pair(this->lidarPose.p, this->lidarPose.q), this->current_scan));
     this->keyframe_timestamps.push_back(this->scan_header_stamp);
     this->keyframe_normals.push_back(this->gicp.getSourceCovariances());
     this->keyframe_transformations.push_back(this->T_corr);
@@ -3662,19 +3667,21 @@ void dlio::OdomNode::updateCurrentInfo()
     this->v_kf_time.push_back(this->scan_stamp);
     lock.unlock();
 
+    // 更新历史关键帧信息 历史关键帧中的每一关键帧点云均为lidar系
     std::unique_lock<decltype(this->tempKeyframe_mutex)> lock_temp(this->tempKeyframe_mutex);
     pcl::copyPointCloud(*this->current_scan_lidar, *this->tempKeyframe.pCloud);
-    this->tempKeyframe.rot = this->currentFusionState.q;
-    this->tempKeyframe.pos = this->currentFusionState.p;
+    this->tempKeyframe.rot = this->lidarPose.q;
+    this->tempKeyframe.pos = this->lidarPose.p;
     this->KeyframesInfo.push_back(this->tempKeyframe);
     this->keyframe_stateT.push_back(this->currentFusionT.matrix());
     lock_temp.unlock();
 
+    // 保留历史关键帧的lidar系点云信息
     pcl::PointCloud<PointType>::Ptr temp(new pcl::PointCloud<PointType>);
     pcl::copyPointCloud(*this->current_scan_lidar, *temp);
     this->history_kf_lidar.push_back(temp);
 
-
+    // 更新当前帧的回环信息
     std::unique_lock<decltype(this->loop_info_mutex)> lock_loop(this->loop_info_mutex);
     if (this->curr_loop_info.loop_candidate)
     {
@@ -3787,28 +3794,28 @@ void dlio::OdomNode::saveFirstKeyframeAndUpdateFactor()
     std::unique_lock<decltype(this->tempKeyframe_mutex)> lock_temp(this->tempKeyframe_mutex);
     KeyframeInfo his_info = this->tempKeyframe;
     lock_temp.unlock();
-    std::cout << "========================================" << std::endl;
-    std::cout << "Before rot = " << his_info.rot.w() << " "
-              << his_info.rot.x() << " "
-              << his_info.rot.y() << " "
-              << his_info.rot.z() << " "
-              << "Before pos = "
-              << his_info.pos.x() << " "
-              << his_info.pos.y() << " "
-              << his_info.pos.z() << " " << std::endl;
-
-
-    std::cout << "After rot = "
-              << iSAMCurrentEstimate.at<gtsam::Pose3>(iSAMCurrentEstimate.size() - 1).rotation().toQuaternion().w() << " "
-              << iSAMCurrentEstimate.at<gtsam::Pose3>(iSAMCurrentEstimate.size() - 1).rotation().toQuaternion().x() << " "
-              << iSAMCurrentEstimate.at<gtsam::Pose3>(iSAMCurrentEstimate.size() - 1).rotation().toQuaternion().y() << " "
-              << iSAMCurrentEstimate.at<gtsam::Pose3>(iSAMCurrentEstimate.size() - 1).rotation().toQuaternion().z() << " "
-              << "After pos = "
-              << iSAMCurrentEstimate.at<gtsam::Pose3>(iSAMCurrentEstimate.size() - 1).translation().x() << " "
-              << iSAMCurrentEstimate.at<gtsam::Pose3>(iSAMCurrentEstimate.size() - 1).translation().y() << " "
-              << iSAMCurrentEstimate.at<gtsam::Pose3>(iSAMCurrentEstimate.size() - 1).translation().z() << " "
-              << std::endl;
-    std::cout << "========================================" << std::endl;
+//    std::cout << "========================================" << std::endl;
+//    std::cout << "Before rot = " << his_info.rot.w() << " "
+//              << his_info.rot.x() << " "
+//              << his_info.rot.y() << " "
+//              << his_info.rot.z() << " "
+//              << "Before pos = "
+//              << his_info.pos.x() << " "
+//              << his_info.pos.y() << " "
+//              << his_info.pos.z() << " " << std::endl;
+//
+//
+//    std::cout << "After rot = "
+//              << iSAMCurrentEstimate.at<gtsam::Pose3>(iSAMCurrentEstimate.size() - 1).rotation().toQuaternion().w() << " "
+//              << iSAMCurrentEstimate.at<gtsam::Pose3>(iSAMCurrentEstimate.size() - 1).rotation().toQuaternion().x() << " "
+//              << iSAMCurrentEstimate.at<gtsam::Pose3>(iSAMCurrentEstimate.size() - 1).rotation().toQuaternion().y() << " "
+//              << iSAMCurrentEstimate.at<gtsam::Pose3>(iSAMCurrentEstimate.size() - 1).rotation().toQuaternion().z() << " "
+//              << "After pos = "
+//              << iSAMCurrentEstimate.at<gtsam::Pose3>(iSAMCurrentEstimate.size() - 1).translation().x() << " "
+//              << iSAMCurrentEstimate.at<gtsam::Pose3>(iSAMCurrentEstimate.size() - 1).translation().y() << " "
+//              << iSAMCurrentEstimate.at<gtsam::Pose3>(iSAMCurrentEstimate.size() - 1).translation().z() << " "
+//              << std::endl;
+//    std::cout << "========================================" << std::endl;
 
 
 
@@ -3864,7 +3871,6 @@ void dlio::OdomNode::getTransformBetweenMapAndGPS(std::vector<GPSMeas>& gps_pos,
 
     gps_center = gps_center / match_gps.size();
     map_center = map_center / match_map.size();
-
 
     Eigen::Matrix3d W = Eigen::Matrix3d::Zero();
 

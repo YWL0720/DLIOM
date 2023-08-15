@@ -34,7 +34,7 @@ Panels:
     Experimental: false
     Name: Time
     SyncMode: 0
-    SyncSource: Global Map
+    SyncSource: ""
 Preferences:
   PromptSaveOnExit: true
 Toolbars:
@@ -258,7 +258,7 @@ Visualization Manager:
       Marker Topic: /robot/dlio_odom/kf_connect
       Name: Submap
       Namespaces:
-        line_extraction: true
+        {}
       Queue Size: 100
       Value: true
     - Alpha: 1
@@ -377,7 +377,7 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz/Orbit
-      Distance: 353.7893371582031
+      Distance: 311.3346252441406
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1

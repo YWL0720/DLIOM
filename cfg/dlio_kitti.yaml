@@ -13,8 +13,7 @@
 dlio:
 
   version: 1.1.0
-  useJaccard: false
-  adaptive: true
+  adaptive: false
 
   pointcloud:
     deskew: false

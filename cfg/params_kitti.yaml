@@ -45,15 +45,15 @@ dlio:
         res: 0.5
 
     keyframe:
-      threshD: 1.0
-      threshR: 20.0
+      threshD: 0.20
+      threshR: 10.0
 
     submap:
       useJaccard: true
       keyframe:
-        knn: 15
-        kcv: 15
-        kcc: 15
+        knn: 20
+        kcv: 20
+        kcc: 20
     gicp:
       minNumPoints: 64
       kCorrespondences: 16
