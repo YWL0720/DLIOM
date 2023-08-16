@@ -12,13 +12,13 @@
 
 dlio:
   version: 1.1.0
-  
+  # 环境自适应，通过点云稀疏程度，自动选择关键帧规模和ICP允许最大匹配距离,默认为false
   adaptive: false
-
+  # 点云去畸变选项 默认为true
   pointcloud:
     deskew: true
     voxelize: true
-
+  # IMU内参 根据需求修改即可
   imu:
     calibration: true
     intrinsics:
@@ -29,7 +29,9 @@ dlio:
                 0.,  0.,  1. ]
       gyro:
         bias: [ 0.0, 0.0, 0.0 ]
-
+  # 该系统以base_link为目标坐标系，输出base_link的位姿
+  # 因而需要给出IMU和LIDAR到base_link的转换关系
+  # 当baselink2lidar为单位阵是，可认为base_link与lidar重合
   extrinsics:
     baselink2imu:
       t: [ 0.0, 0.0, 0.28 ]

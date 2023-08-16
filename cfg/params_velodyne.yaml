@@ -11,13 +11,13 @@
 ###########################################################
 
 dlio:
-
+  # 各坐标系的名称 默认即可
   frames:
     odom: odom
     baselink: base_link
     lidar: lidar
     imu: imu
-
+  # map选项 为原框架参数 已废除
   map:
     waitUntilMove: false
     dense:
@@ -27,7 +27,7 @@ dlio:
       leafSize: 0.25
 
   odom:
-
+    # 标准重力大小
     gravity: 0.0001
 
     imu:
@@ -37,23 +37,24 @@ dlio:
         accel: true
         time: 3
       bufferSize: 5000
-
+    # 点云预处理滤波体素大小
     preprocessing:
       cropBoxFilter:
         size: 1.0
       voxelFilter:
         res: 0.5
-
+    # 关键帧距离和角度阈值
     keyframe:
       threshD: 0.5
       threshR: 10.0
-
+    # 子地图关键帧数量选择
     submap:
       useJaccard: true
       keyframe:
         knn: 30
         kcv: 30
         kcc: 30
+    # gicp相关参数
     gicp:
       minNumPoints: 64
       kCorrespondences: 16
@@ -62,7 +63,7 @@ dlio:
       transformationEpsilon: 0.01
       rotationEpsilon: 0.01
       initLambdaFactor: 1e-9
-
+    # 几何观测器参数
     geo:
       Kp: 4.5
       Kv: 11.25

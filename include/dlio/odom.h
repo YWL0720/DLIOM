@@ -20,26 +20,22 @@ public:
   ~OdomNode();
 
   void start();
-  int count;
-  void mapping();
   void performLoop();
   void saveKeyframeAndUpdateFactor();
   bool isKeyframe();
   void addOdomFactor();
   void addLoopFactor();
   void addGPSFactor();
-  void addGPSFactorWithoutAlign();
   void loopVisual();
   void correctPoses();
   void updateMap();
   void updateCurrentInfo();
   void saveFirstKeyframeAndUpdateFactor();
+
 private:
 
-  //
-  float icpScore;
   std::fstream f;
-  Eigen::Isometry3f keyframe_pose_corr;
+  float icpScore;
   visualization_msgs::Marker loop_marker;
   bool kf_update;
   bool isLoop;
